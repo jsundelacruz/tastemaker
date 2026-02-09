@@ -1,0 +1,16 @@
+# Render.com blueprint - optional
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: tastemaker
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
+      - key: APIFY_TOKEN
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TasteMaker · Ingestion</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=DM+Serif+Display&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f0f0e;
+      --surface: #1a1a18;
+      --border: #2a2a26;
+      --text: #e8e6e3;
+      --muted: #8a8784;
+      --accent: #c4a574;
+      --accent-dim: #8b7355;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'DM Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    .container {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 3rem 1.5rem;
+    }
+    h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: 1.75rem;
+      font-weight: 400;
+      margin-bottom: 0.25rem;
+      color: var(--accent);
+    }
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 2.5rem;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .card h2 {
+      font-size: 0.75rem;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+    .input-row {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 0.75rem;
+    }
+    input[type="text"], input[type="url"] {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.6rem 0.9rem;
+      color: var(--text);
+      font-size: 0.9rem;
+      font-family: inherit;
+    }
+    input::placeholder {
+      color: var(--muted);
+      opacity: 0.7;
+    }
+    input:focus {
+      outline: none;
+      border-color: var(--accent-dim);
+    }
+    button {
+      background: var(--accent);
+      color: var(--bg);
+      border: none;
+      border-radius: 6px;
+      padding: 0.6rem 1rem;
+      font-size: 0.9rem;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.9; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+    button.secondary:hover { color: var(--text); border-color: var(--muted); }
+    button.danger {
+      background: transparent;
+      color: #c45c5c;
+      padding: 0.25rem 0.5rem;
+      font-size: 0.8rem;
+    }
+    button.danger:hover { background: rgba(196, 92, 92, 0.15); }
+    .dropzone {
+      border: 2px dashed var(--border);
+      border-radius: 8px;
+      padding: 2rem;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+      margin-bottom: 0.75rem;
+    }
+    .dropzone:hover, .dropzone.dragover {
+      border-color: var(--accent-dim);
+      background: rgba(196, 165, 116, 0.05);
+    }
+    .dropzone p {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .dropzone .hint {
+      font-size: 0.8rem;
+      margin-top: 0.25rem;
+      opacity: 0.8;
+    }
+    .source-list {
+      list-style: none;
+    }
+    .source-list li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0.5rem 0;
+      border-bottom: 1px solid var(--border);
+      font-size: 0.85rem;
+    }
+    .source-list li:last-child { border-bottom: none; }
+    .source-list .url {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 420px;
+    }
+    .source-list .url a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .source-list .url a:hover { text-decoration: underline; }
+    .ingest-btn {
+      width: 100%;
+      padding: 0.9rem;
+      font-size: 1rem;
+      margin-top: 0.5rem;
+    }
+    .output {
+      margin-top: 1.5rem;
+      padding: 1rem;
+      background: var(--bg);
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+      max-height: 280px;
+      overflow-y: auto;
+    }
+    .output.success { border-color: var(--accent-dim); }
+    .output.error { border-color: #c45c5c; }
+    .output:empty { display: none; }
+    .hidden { display: none; }
+    input[type="file"] { display: none; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>TasteMaker</h1>
+    <p class="subtitle">Add sources, then run ingestion to scrape, embed, and analyze.</p>
+
+    <div class="card">
+      <h2>Pinterest boards</h2>
+      <div class="input-row">
+        <input type="url" id="pinterestUrl" placeholder="https://www.pinterest.com/username/board-name/ or pin.it/xxx">
+        <button type="button" id="addPinterest">Add</button>
+      </div>
+      <ul class="source-list" id="pinterestList"></ul>
+    </div>
+
+    <div class="card">
+      <h2>Cosmos clusters</h2>
+      <div class="input-row">
+        <input type="url" id="cosmosUrl" placeholder="https://cosmos.so/username/cluster-name">
+        <button type="button" id="addCosmos">Add</button>
+      </div>
+      <ul class="source-list" id="cosmosList"></ul>
+    </div>
+
+    <div class="card">
+      <h2>Screenshots</h2>
+      <div class="dropzone" id="dropzone">
+        <p>Drop an image here or paste (Ctrl+V)</p>
+        <p class="hint">PNG, JPEG — saves locally and embeds</p>
+      </div>
+      <input type="file" id="fileInput" accept="image/*">
+      <ul class="source-list" id="screenshotList"></ul>
+    </div>
+
+    <div class="card">
+      <button class="ingest-btn" id="ingestBtn">Run ingestion</button>
+      <div class="output" id="output"></div>
+    </div>
+  </div>
+
+  <script>
+    const API = '';
+
+    async function fetchSources() {
+      const res = await fetch('/api/sources');
+      return res.json();
+    }
+
+    function renderLists(sources) {
+      const pinList = document.getElementById('pinterestList');
+      const cosList = document.getElementById('cosmosList');
+      const shotList = document.getElementById('screenshotList');
+
+      pinList.innerHTML = sources.pinterest.map((url, i) => `
+        <li>
+          <span class="url"><a href="${url}" target="_blank">${url}</a></span>
+          <button class="danger" data-type="pinterest" data-idx="${i}">Remove</button>
+        </li>
+      `).join('');
+
+      cosList.innerHTML = sources.cosmos.map((url, i) => `
+        <li>
+          <span class="url"><a href="${url}" target="_blank">${url}</a></span>
+          <button class="danger" data-type="cosmos" data-idx="${i}">Remove</button>
+        </li>
+      `).join('');
+
+      shotList.innerHTML = sources.screenshots.map((path, i) => `
+        <li>
+          <span class="url">${path.split('/').pop()}</span>
+          <button class="danger" data-type="screenshot" data-idx="${i}">Remove</button>
+        </li>
+      `).join('') || '<li><span class="url" style="color:var(--muted)">No screenshots added</span></li>';
+    }
+
+    async function loadSources() {
+      const sources = await fetchSources();
+      renderLists(sources);
+    }
+
+    document.getElementById('addPinterest').onclick = async () => {
+      const input = document.getElementById('pinterestUrl');
+      const url = input.value.trim();
+      if (!url) return;
+      try {
+        const res = await fetch('/api/pinterest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ url }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || err.error || res.statusText);
+        }
+        const data = await res.json();
+        renderLists(data.sources);
+        input.value = '';
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+
+    document.getElementById('addCosmos').onclick = async () => {
+      const input = document.getElementById('cosmosUrl');
+      const url = input.value.trim();
+      if (!url) return;
+      try {
+        const res = await fetch('/api/cosmos', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({ url }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || err.error || res.statusText);
+        }
+        const data = await res.json();
+        renderLists(data.sources);
+        input.value = '';
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+
+    document.getElementById('dropzone').onclick = () => document.getElementById('fileInput').click();
+
+    document.getElementById('dropzone').ondragover = (e) => {
+      e.preventDefault();
+      e.currentTarget.classList.add('dragover');
+    };
+    document.getElementById('dropzone').ondragleave = (e) => {
+      e.currentTarget.classList.remove('dragover');
+    };
+    document.getElementById('dropzone').ondrop = async (e) => {
+      e.preventDefault();
+      e.currentTarget.classList.remove('dragover');
+      const file = e.dataTransfer?.files?.[0];
+      if (file && file.type.startsWith('image/')) await uploadScreenshot(file);
+    };
+
+    document.getElementById('fileInput').onchange = async (e) => {
+      const file = e.target.files?.[0];
+      if (file) await uploadScreenshot(file);
+      e.target.value = '';
+    };
+
+    document.addEventListener('paste', async (e) => {
+      const item = e.clipboardData?.items?.[0];
+      if (item?.type?.startsWith('image/')) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) await uploadScreenshot(file);
+      }
+    });
+
+    async function uploadScreenshot(file) {
+      const form = new FormData();
+      form.append('file', file);
+      try {
+        const res = await fetch('/api/screenshot', { method: 'POST', body: form });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || err.error || res.statusText);
+        }
+        const data = await res.json();
+        renderLists(data.sources);
+      } catch (e) {
+        alert(e.message);
+      }
+    }
+
+    document.addEventListener('click', async (e) => {
+      if (e.target.classList.contains('danger')) {
+        const { type, idx } = e.target.dataset;
+        if (type === 'pinterest') {
+          await fetch(`/api/pinterest/${idx}`, { method: 'DELETE' });
+        } else if (type === 'cosmos') {
+          await fetch(`/api/cosmos/${idx}`, { method: 'DELETE' });
+        } else if (type === 'screenshot') {
+          await fetch(`/api/screenshot/${idx}`, { method: 'DELETE' });
+        }
+        loadSources();
+      }
+    });
+
+    document.getElementById('ingestBtn').onclick = async () => {
+      const btn = document.getElementById('ingestBtn');
+      const out = document.getElementById('output');
+      btn.disabled = true;
+      out.textContent = 'Running...';
+      out.className = 'output';
+      try {
+        const res = await fetch('/api/ingest', { method: 'POST' });
+        const text = await res.text();
+        let data;
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error(res.ok ? 'Invalid response' : (text || res.statusText));
+        }
+        if (data.error) throw new Error(data.error);
+        out.textContent = JSON.stringify(data, null, 2);
+        out.className = 'output success';
+      } catch (e) {
+        out.textContent = e.message || String(e);
+        out.className = 'output error';
+      }
+      btn.disabled = false;
+    };
+
+    loadSources();
+  </script>
+</body>
+</html>
