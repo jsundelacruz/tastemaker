@@ -1,0 +1,6 @@
+# TasteMaker - Selected Pinterest boards to ingest
+# Add one board URL per line. Lines starting with # are ignored.
+# Only boards listed here will be scraped—no other boards are touched.
+#
+# Uncomment and add your board URLs:
+# https://pin.it/7ESoTISS5

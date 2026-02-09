@@ -1,0 +1,24 @@
+# API & Web
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+httpx>=0.26.0
+python-multipart>=0.0.6
+
+# Apify - Pinterest scraping
+apify-client>=1.6.0
+
+# Database - Supabase
+supabase>=2.3.0
+
+# Image embeddings - CLIP
+open-clip-torch>=2.24.0
+torch>=2.1.0
+torchvision>=0.16.0
+Pillow>=10.0.0
+
+# Anthropic - Claude agent
+anthropic>=0.18.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.5.0
