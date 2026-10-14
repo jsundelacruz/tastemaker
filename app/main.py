@@ -290,7 +290,7 @@ async def find_similar(file: UploadFile = File(...), limit: int = 12):
                 "id": str(m.get("id")),
                 "image_url": img_url,
                 "display_url": display_url,
-                "source_url": meta.get("pin_url") or meta.get("board_url") or meta.get("cluster_url"),
+                "source_url": meta.get("pin_url") or meta.get("post_url") or meta.get("board_url") or meta.get("cluster_url"),
                 "source_platform": m.get("source_platform"),
                 "source_collection": m.get("source_collection"),
                 "similarity": round(float(m.get("similarity", 0)) * 100, 1),
