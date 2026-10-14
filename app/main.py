@@ -8,12 +8,13 @@ import base64
 import uuid
 import os
 import re
+import secrets
 from pathlib import Path
+from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, FileResponse, RedirectResponse, Response, PlainTextResponse
 from dotenv import load_dotenv
 
 # Project root (tastemaker directory)
@@ -41,13 +42,43 @@ def _ensure_uploads() -> Path:
 
 app = FastAPI(title="TasteMaker Ingestion")
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# All pages are served by this app, so no CORS: other sites can't call the API from a browser.
+
+LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+AUTH_EXEMPT = {"/healthz"}
+
+
+@app.middleware("http")
+async def require_password(request: Request, call_next):
+    """
+    HTTP Basic auth (any username) against TASTEMAKER_PASSWORD.
+    With no password set, only requests from this machine are allowed, so a deploy
+    without one fails closed instead of exposing the archive and paid endpoints.
+    """
+    if request.url.path in AUTH_EXEMPT:
+        return await call_next(request)
+    password = os.getenv("TASTEMAKER_PASSWORD", "")
+    if not password:
+        if request.client and request.client.host in LOCAL_HOSTS:
+            return await call_next(request)
+        return PlainTextResponse("Set TASTEMAKER_PASSWORD to allow remote access.", status_code=403)
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("basic "):
+        try:
+            _, _, given = base64.b64decode(auth[6:]).decode("utf-8").partition(":")
+        except Exception:
+            given = ""
+        if secrets.compare_digest(given.encode(), password.encode()):
+            return await call_next(request)
+    return PlainTextResponse(
+        "Authentication required", status_code=401,
+        headers={"WWW-Authenticate": 'Basic realm="TasteMaker"'},
+    )
+
+
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -119,23 +150,35 @@ async def constellation_data():
 
 @app.get("/curate", response_class=HTMLResponse)
 async def curate_page():
-    """Curation tool: grid of images, mark and delete by id."""
+    """Curation tool: grid of images, mark and delete by id (data via /api/images)."""
     path = ROOT / "visualization" / "curate.html"
     if not path.exists():
         raise HTTPException(404, f"Curate not found at {path}")
+    return FileResponse(path)
+
+
+@app.get("/api/images")
+async def get_images():
+    """All images (id, url, collection, local path) for the curation grid."""
     try:
-        html = path.read_text(encoding="utf-8")
+        from database.db_client import get_supabase_client, list_images
+        return list_images(get_supabase_client())
     except Exception as e:
-        raise HTTPException(500, f"Cannot read curate.html: {e}")
-    url = os.getenv("SUPABASE_URL", "")
-    key = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY", "")
-    # Replace config whether currently empty or already set (so /curate always uses .env)
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/images/delete")
+async def delete_images(body: dict = Body(...)):
+    """Delete images by id. Body: {"ids": [...]}."""
+    ids = body.get("ids")
+    if not isinstance(ids, list) or not ids or not all(isinstance(i, str) for i in ids):
+        raise HTTPException(400, "ids must be a non-empty list of strings")
     try:
-        html = re.sub(r"const SUPABASE_URL\s*=\s*[^;]+;", f"const SUPABASE_URL = {repr(url)};", html, count=1)
-        html = re.sub(r"const SUPABASE_KEY\s*=\s*[^;]+;", f"const SUPABASE_KEY = {repr(key)};", html, count=1)
-    except Exception:
-        pass  # Leave html unchanged if substitution fails
-    return HTMLResponse(html)
+        from database.db_client import get_supabase_client, delete_images_by_id
+        delete_images_by_id(get_supabase_client(), ids)
+        return {"deleted": len(ids)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 def _taste_needs_reanalysis(client) -> bool:
@@ -318,21 +361,43 @@ async def serve_local_image(path: str):
         raise HTTPException(404, "Not found")
 
 
+# Image hosts the archive actually uses; the proxy refuses anything else (no open proxy / SSRF)
+PROXY_HOST_SUFFIXES = ("cosmos.so", "pinimg.com", "cdninstagram.com", "fbcdn.net", "supabase.co")
+PROXY_MAX_BYTES = 15 * 1024 * 1024
+
+
+def _proxy_host_allowed(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and any(host == h or host.endswith("." + h) for h in PROXY_HOST_SUFFIXES)
+
+
 @app.get("/api/proxy-image")
 async def proxy_image(url: str):
-    """Proxy external images to bypass CORS issues."""
+    """Proxy images from known CDNs that block hotlinking."""
     import httpx
-    if not url or not url.startswith(("http://", "https://")):
-        raise HTTPException(400, "Invalid URL")
+    if not _proxy_host_allowed(url):
+        raise HTTPException(400, "URL not allowed")
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(url, follow_redirects=True)
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+            for _ in range(3):  # follow redirects manually so each hop is re-checked
+                resp = await client.get(url)
+                if not resp.is_redirect:
+                    break
+                url = str(resp.next_request.url) if resp.next_request else ""
+                if not _proxy_host_allowed(url):
+                    raise HTTPException(400, "Redirect not allowed")
             resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "image/jpeg")
-            from fastapi.responses import Response
-            return Response(content=resp.content, media_type=content_type)
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(502, f"Failed to fetch image: {str(e)}")
+        raise HTTPException(502, f"Failed to fetch image: {e}")
+    content_type = resp.headers.get("content-type", "")
+    if not content_type.startswith("image/"):
+        raise HTTPException(502, "Not an image")
+    if len(resp.content) > PROXY_MAX_BYTES:
+        raise HTTPException(502, "Image too large")
+    return Response(content=resp.content, media_type=content_type)
 
 
 @app.get("/api/sources")

@@ -5,6 +5,7 @@ services:
     name: tastemaker
     runtime: docker
     dockerfilePath: ./Dockerfile
+    healthCheckPath: /healthz
     envVars:
       - key: SUPABASE_URL
         sync: false
@@ -13,4 +14,6 @@ services:
       - key: APIFY_TOKEN
         sync: false
       - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: TASTEMAKER_PASSWORD
         sync: false

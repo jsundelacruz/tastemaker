@@ -135,6 +135,30 @@ def get_sample_images(
     return result.data or []
 
 
+def list_images(client: Client, page_size: int = 1000) -> list[dict]:
+    """All images for curation, paged past PostgREST's per-request row limit."""
+    rows: list[dict] = []
+    start = 0
+    while True:
+        result = (
+            client.table("images")
+            .select("id, image_url, source_collection, local_path")
+            .order("created_at")
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = result.data or []
+        rows.extend(batch)
+        if len(batch) < page_size:
+            return rows
+        start += page_size
+
+
+def delete_images_by_id(client: Client, image_ids: list[str]) -> None:
+    """Delete images by id."""
+    client.table("images").delete().in_("id", image_ids).execute()
+
+
 def get_images_metadata(client: Client, image_ids: list[str]) -> dict[str, dict]:
     """Map image id -> original_metadata (for linking search results back to their source)."""
     if not image_ids:
