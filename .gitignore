@@ -8,3 +8,5 @@ dist/
 build/
 sources.json
 data/
+.DS_Store
+visualization/constellation_data*.json
