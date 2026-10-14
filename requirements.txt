@@ -22,3 +22,11 @@ anthropic>=0.18.0
 # Utilities
 python-dotenv>=1.0.0
 pydantic>=2.5.0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# Constellation visualization
+umap-learn>=0.5.0
+hdbscan>=0.8.0
+numpy>=1.24.0
+scipy>=1.11.0

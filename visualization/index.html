@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TasteMaker · Constellation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1E1E1E;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    #crosshair-bg {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      background-color: #1e1e1e;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24'%3E%3Cpath fill='%23333333' d='M12 9v6M9 12h6' stroke='%23333333' stroke-width='1'/%3E%3C/svg%3E");
+      background-repeat: repeat;
+      background-size: 2.4vmin 2.4vmin;
+    }
+    #canvas { display: block; position: relative; z-index: 1; width: 100vw; height: 100vh; cursor: grab; }
+    #canvas:active { cursor: grabbing; }
+    #back {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 30;
+      color: #c4a882;
+      text-decoration: none;
+      font-size: 13px;
+      padding: 6px 10px;
+      background: rgba(30, 30, 30, 0.9);
+      border: 1px solid rgba(196, 168, 130, 0.25);
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+    #back:hover { background: rgba(40, 36, 32, 0.95); }
+    #legend {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      z-index: 30;
+      font-size: 11px;
+      color: #6b6560;
+      max-width: 280px;
+      line-height: 1.4;
+    }
+    #legend strong { color: #e8e0d0; }
+    #cluster-labels {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 5;
+    }
+    #cluster-labels .cluster-label {
+      position: absolute;
+      font-size: 11px;
+      font-weight: 400;
+      color: #e8e0d0;
+      text-shadow: 0 0 8px rgba(0,0,0,0.8);
+      white-space: nowrap;
+      pointer-events: auto;
+      cursor: pointer;
+      padding: 2px 6px;
+      border-radius: 4px;
+      transition: background 0.15s, color 0.15s;
+    }
+    #cluster-labels .cluster-label:hover {
+      background: rgba(196, 168, 130, 0.2);
+      color: #f0e8dc;
+    }
+    #tooltip {
+      position: fixed;
+      pointer-events: none;
+      z-index: 25;
+      background: rgba(18, 18, 18, 0.95);
+      border: 1px solid rgba(196, 168, 130, 0.25);
+      border-radius: 8px;
+      padding: 10px 12px;
+      max-width: 260px;
+      opacity: 0;
+      transition: opacity 0.12s ease;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      font-size: 12px;
+      color: #e8e0d0;
+    }
+    #tooltip.visible { opacity: 1; }
+    #tooltip .tt-desc { color: #9a948a; margin-top: 4px; line-height: 1.35; }
+    #panel {
+      position: fixed;
+      top: 0;
+      right: 0;
+      width: min(360px, 90vw);
+      height: 100vh;
+      background: #0f0f0e;
+      border-left: 1px solid rgba(196, 168, 130, 0.2);
+      z-index: 40;
+      transform: translateX(100%);
+      transition: transform 0.2s ease;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+    #panel.open { transform: translateX(0); }
+    #panel .panel-header {
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-shrink: 0;
+    }
+    #panel .panel-header h2 {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e8e0d0;
+    }
+    #panel .panel-close {
+      background: none;
+      border: none;
+      color: #9a948a;
+      cursor: pointer;
+      padding: 4px;
+      font-size: 18px;
+      line-height: 1;
+    }
+    #panel .panel-close:hover { color: #e8e0d0; }
+    #panel .panel-body { padding: 16px; flex: 1; }
+    #panel .panel-body img {
+      width: 100%;
+      border-radius: 8px;
+      display: block;
+      background: #1a1a18;
+      border: 1px solid rgba(196, 168, 130, 0.25);
+    }
+    #panel .panel-body .source {
+      margin-top: 12px;
+      font-size: 12px;
+      color: #9a948a;
+    }
+    #panel .panel-body .source a { color: #c4a882; text-decoration: none; }
+    #panel .panel-body .source a:hover { text-decoration: underline; }
+    #panel .panel-body .description {
+      margin-top: 10px;
+      font-size: 13px;
+      color: #e8e0d0;
+      line-height: 1.45;
+    }
+    #panel .panel-body .cluster-analysis {
+      font-size: 13px;
+      color: #e8e0d0;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+    #search-wrap {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 30;
+      width: min(320px, calc(100vw - 24px));
+    }
+    #search-wrap .inner { position: relative; width: 100%; }
+    #search-wrap input {
+      width: 100%;
+      padding: 10px 16px 10px 40px;
+      font-size: 14px;
+      color: #e8e0d0;
+      background: rgba(18, 18, 22, 0.6);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 24px;
+      outline: none;
+      font-family: inherit;
+    }
+    #search-wrap input::placeholder { color: #6b6b6b; }
+    #search-wrap input:focus { border-color: rgba(196, 165, 116, 0.5); }
+    #search-wrap .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #6b6b6b;
+      font-size: 14px;
+      pointer-events: none;
+    }
+    #search-results {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: calc(100% + 6px);
+      max-height: 200px;
+      overflow-y: auto;
+      background: rgba(18, 18, 22, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      display: none;
+    }
+    #search-results.visible { display: block; }
+    #search-results button {
+      width: 100%;
+      padding: 8px 14px;
+      text-align: left;
+      font-size: 13px;
+      color: #e8e0d0;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    #search-results button:last-child { border-bottom: none; }
+    #search-results button:hover { background: rgba(255,255,255,0.06); }
+    #search-results .result-username { font-weight: 500; }
+    #search-results .result-desc { color: #6b6b6b; font-size: 11px; margin-top: 2px; }
+    #wayfinder {
+      position: fixed;
+      bottom: 12px;
+      right: 12px;
+      z-index: 30;
+      background: rgba(18, 18, 22, 0.92);
+      border: 2px solid rgba(255,255,255,0.15);
+      border-radius: 8px;
+      padding: 6px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      cursor: pointer;
+    }
+    #wayfinder canvas { display: block; border-radius: 4px; }
+    #wayfinder-label { font-size: 10px; color: #6b6560; text-align: center; margin-top: 4px; }
+  </style>
+</head>
+<body>
+  <div id="crosshair-bg"></div>
+  <canvas id="canvas"></canvas>
+  <a id="back" href="/">← Back to TasteMaker</a>
+  <div id="cluster-labels"></div>
+  <div id="tooltip"></div>
+  <div id="panel">
+    <div class="panel-header">
+      <h2 id="panel-title">Detail</h2>
+      <button type="button" class="panel-close" id="panel-close" aria-label="Close">×</button>
+    </div>
+    <div class="panel-body" id="panel-body"></div>
+  </div>
+  <div id="search-wrap">
+    <div class="inner">
+      <span class="search-icon" aria-hidden="true">⌕</span>
+      <input id="search-input" type="text" placeholder="Search by username or caption…" autocomplete="off" />
+      <div id="search-results"></div>
+    </div>
+  </div>
+  <div id="wayfinder" title="Click to jump to a spot in the constellation">
+    <canvas id="wayfinder-canvas" width="200" height="100"></canvas>
+    <div id="wayfinder-label">Click to jump · box = your view</div>
+  </div>
+  <div id="legend">
+    <strong>Constellation v2</strong> — Each dot is an image. Drag to pan, scroll to zoom. Hover to see caption; click image for details.
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+
+    const SUPABASE_URL = '';
+
+    const canvas = document.getElementById('canvas');
+    const tooltip = document.getElementById('tooltip');
+    const panel = document.getElementById('panel');
+    const panelTitle = document.getElementById('panel-title');
+    const panelBody = document.getElementById('panel-body');
+    const panelClose = document.getElementById('panel-close');
+    const clusterLabelsEl = document.getElementById('cluster-labels');
+    const wayfinderEl = document.getElementById('wayfinder');
+    const wayfinderCanvas = document.getElementById('wayfinder-canvas');
+    const searchInput = document.getElementById('search-input');
+    const searchResults = document.getElementById('search-results');
+    const searchWrap = document.getElementById('search-wrap');
+
+    const scene = new THREE.Scene();
+
+    const SPRITE_SIZE = 0.4;
+    const SPRITE_HOVER_SCALE = 1.5;
+    const BORDER_COLOR = 0xc4a882;
+    const BORDER_ALPHA = 0.25;
+
+    let pointsData = [];
+    let clustersData = {};
+    let spriteGroup = null;
+    let camera, renderer;
+    let zoomLevel = 1;
+    let baseOrthoSize = 6;
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let camStart = { x: 0, y: 0 };
+    const mouse = new THREE.Vector2();
+    const raycaster = new THREE.Raycaster();
+    const hoveredSprite = { current: null };
+    const clusterLabelDivs = new Map();
+    let wayfinderScale = 1, wayfinderCx = 0, wayfinderCy = 0, wayfinderCenterX = 0, wayfinderCenterY = 0;
+
+    function clusterColor(cluster) {
+      if (cluster === -1 || cluster === '-1') return [0.5, 0.5, 0.55];
+      const hue = (Number(cluster) * 0.618033989) % 1;
+      const c = 0.65; const x = c * (1 - Math.abs((hue * 6) % 2 - 1)); const m = 0.35;
+      if (hue < 1/6) return [c + m, x + m, m];
+      if (hue < 2/6) return [x + m, c + m, m];
+      if (hue < 3/6) return [m, c + m, x + m];
+      if (hue < 4/6) return [m, x + m, c + m];
+      if (hue < 5/6) return [x + m, m, c + m];
+      return [c + m, m, x + m];
+    }
+
+    function getImageUrl(datum) {
+      let url = '';
+      if (datum.local_path) {
+        if (/^(instagram|pinterest|cosmos|manual)\//.test(datum.local_path)) {
+          if (SUPABASE_URL) {
+            url = `${SUPABASE_URL}/storage/v1/object/public/images/${datum.local_path}`;
+          }
+          if (!url && datum.image_url && /^https?:\/\//.test(datum.image_url)) {
+            url = datum.image_url;
+          }
+        } else if (datum.local_path.startsWith('data/')) {
+          url = '/api/local-image?path=' + encodeURIComponent(datum.local_path);
+        }
+      }
+      if (!url && datum.image_url && !datum.image_url.startsWith('file://') && /^https?:\/\//.test(datum.image_url)) {
+        url = datum.image_url;
+      }
+      if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+        return url;
+      }
+      return url || '';
+    }
+
+    function placeholderTexture() {
+      const c = document.createElement('canvas');
+      c.width = 2;
+      c.height = 2;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#2a2a26';
+      ctx.fillRect(0, 0, 2, 2);
+      const t = new THREE.CanvasTexture(c);
+      t.needsUpdate = true;
+      return t;
+    }
+
+    function loadTexture(url) {
+      return new Promise((resolve, reject) => {
+        const loader = new THREE.TextureLoader();
+        loader.setCrossOrigin('anonymous');
+        loader.load(url, resolve, undefined, reject);
+      });
+    }
+
+    const MIN_SPRITE_DIST = 0.46;
+
+    function spreadPointsNoOverlap(points) {
+      const n = points.length;
+      if (n < 2) return;
+      const maxIter = 50;
+      for (let iter = 0; iter < maxIter; iter++) {
+        let moved = 0;
+        for (let i = 0; i < n; i++) {
+          for (let j = i + 1; j < n; j++) {
+            const dx = points[j].x - points[i].x;
+            const dy = points[j].y - points[i].y;
+            const d = Math.hypot(dx, dy);
+            if (d < MIN_SPRITE_DIST && d > 1e-6) {
+              const overlap = MIN_SPRITE_DIST - d;
+              const nx = dx / d;
+              const ny = dy / d;
+              points[i].x -= nx * overlap * 0.5;
+              points[i].y -= ny * overlap * 0.5;
+              points[j].x += nx * overlap * 0.5;
+              points[j].y += ny * overlap * 0.5;
+              moved++;
+            }
+          }
+        }
+        if (moved === 0) break;
+      }
+    }
+
+    function normalizeLayout(points, clusters) {
+      if (!points.length) return { points, clusters };
+      let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+      for (const p of points) {
+        minX = Math.min(minX, p.x);
+        maxX = Math.max(maxX, p.x);
+        minY = Math.min(minY, p.y);
+        maxY = Math.max(maxY, p.y);
+      }
+      const centerX = (minX + maxX) / 2;
+      const centerY = (minY + maxY) / 2;
+      const span = Math.max(maxX - minX, maxY - minY, 0.1);
+      const targetSpan = 32;
+      const scale = targetSpan / span;
+      const scaledPoints = points.map(p => ({
+        ...p,
+        x: (p.x - centerX) * scale,
+        y: (p.y - centerY) * scale,
+      }));
+      spreadPointsNoOverlap(scaledPoints);
+      const scaledClusters = {};
+      for (const [cid, meta] of Object.entries(clusters)) {
+        const hull = meta.hull;
+        scaledClusters[cid] = {
+          ...meta,
+          hull: Array.isArray(hull) && hull.length
+            ? hull.map(([x, y]) => [(x - centerX) * scale, (y - centerY) * scale])
+            : hull || [],
+        };
+      }
+      return { points: scaledPoints, clusters: scaledClusters };
+    }
+
+    async function loadData() {
+      const res = await fetch('/constellation_data.json');
+      if (!res.ok) throw new Error('Constellation data not found. Run: python -m visualization.constellation');
+      const data = await res.json();
+      let points = [];
+      let clusters = {};
+      if (data && Array.isArray(data.points)) {
+        points = data.points;
+        clusters = data.clusters && typeof data.clusters === 'object' ? data.clusters : {};
+      } else if (Array.isArray(data)) {
+        points = data;
+        clusters = {};
+      } else {
+        throw new Error('Invalid constellation_data.json format (expected { points: [...] } or array)');
+      }
+      const { points: scaledPoints, clusters: scaledClusters } = normalizeLayout(points, clusters);
+      pointsData = scaledPoints;
+      clustersData = scaledClusters;
+      return { points: pointsData, clusters: clustersData };
+    }
+
+    function buildScene() {
+      const aspect = window.innerWidth / window.innerHeight;
+      const orthoSize = baseOrthoSize / zoomLevel;
+      camera = new THREE.OrthographicCamera(
+        -orthoSize * aspect, orthoSize * aspect,
+        orthoSize, -orthoSize,
+        0.1, 1000
+      );
+      camera.position.set(0, 0, 50);
+      camera.lookAt(0, 0, 0);
+
+      renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+      renderer.setClearColor(0x000000, 0);
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+      // Image sprites (image plane + border plane behind for #c4a88240 border)
+      spriteGroup = new THREE.Group();
+      scene.add(spriteGroup);
+      const borderGeom = new THREE.PlaneGeometry(SPRITE_SIZE, SPRITE_SIZE);
+      const borderMat = new THREE.MeshBasicMaterial({
+        color: BORDER_COLOR,
+        transparent: true,
+        opacity: BORDER_ALPHA,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      pointsData.forEach((datum, i) => {
+        const geom = new THREE.PlaneGeometry(SPRITE_SIZE, SPRITE_SIZE);
+        const mat = new THREE.MeshBasicMaterial({
+          map: placeholderTexture(),
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 1,
+          depthTest: true,
+          depthWrite: true,
+        });
+        const plane = new THREE.Mesh(geom, mat);
+        plane.position.set(datum.x, datum.y, 0);
+        plane.userData = { index: i, datum };
+        const borderPlane = new THREE.Mesh(borderGeom.clone(), borderMat.clone());
+        borderPlane.position.set(datum.x, datum.y, -0.01);
+        borderPlane.scale.setScalar(1.02);
+        borderPlane.userData = { index: i, isBorder: true };
+        spriteGroup.add(borderPlane);
+        spriteGroup.add(plane);
+        const url = getImageUrl(datum);
+        if (url) {
+          loadTexture(url).then(tex => {
+            tex.minFilter = THREE.LinearFilter;
+            tex.magFilter = THREE.LinearFilter;
+            plane.material.map = tex;
+            plane.material.needsUpdate = true;
+          }).catch(() => {});
+        }
+      });
+
+      updateClusterLabels();
+      drawWayfinder();
+    }
+
+    function drawWayfinder() {
+      if (!wayfinderCanvas || !pointsData.length || !camera) return;
+      const w = wayfinderCanvas.width;
+      const h = wayfinderCanvas.height;
+      const ctx = wayfinderCanvas.getContext('2d');
+      ctx.fillStyle = '#1e1e1e';
+      ctx.fillRect(0, 0, w, h);
+      const pad = 10;
+      const cx = w / 2;
+      const cy = h / 2;
+      let sumX = 0, sumY = 0;
+      pointsData.forEach(p => { sumX += p.x; sumY += p.y; });
+      const centerX = sumX / pointsData.length;
+      const centerY = sumY / pointsData.length;
+      let maxR = 0;
+      pointsData.forEach(p => {
+        const r = Math.hypot(p.x - centerX, p.y - centerY);
+        if (r > maxR) maxR = r;
+      });
+      const scale = (Math.min(w, h) - pad * 2) / (1.0 * (maxR || 1));
+      wayfinderScale = scale;
+      wayfinderCx = cx;
+      wayfinderCy = cy;
+      wayfinderCenterX = centerX;
+      wayfinderCenterY = centerY;
+      pointsData.forEach(p => {
+        const px = cx + (p.x - centerX) * scale;
+        const py = cy - (p.y - centerY) * scale;
+        const [r0, g0, b0] = clusterColor(p.cluster);
+        ctx.fillStyle = `rgb(${Math.round(r0*255)},${Math.round(g0*255)},${Math.round(b0*255)})`;
+        ctx.beginPath();
+        ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      const aspect = window.innerWidth / window.innerHeight;
+      const orthoSize = baseOrthoSize / zoomLevel;
+      const boxW = Math.max(8, Math.min(w - pad * 2, 2 * orthoSize * aspect * scale));
+      const boxH = Math.max(6, Math.min(h - pad * 2, 2 * orthoSize * scale));
+      const vx = cx + (camera.position.x - centerX) * scale;
+      const vy = cy - (camera.position.y - centerY) * scale;
+      ctx.strokeStyle = 'rgba(196, 165, 116, 0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 2]);
+      ctx.strokeRect(vx - boxW / 2, vy - boxH / 2, boxW, boxH);
+      ctx.setLineDash([]);
+    }
+
+    function onWayfinderClick(e) {
+      if (!pointsData.length || !wayfinderCanvas) return;
+      const rect = wayfinderCanvas.getBoundingClientRect();
+      const scaleX = wayfinderCanvas.width / rect.width;
+      const scaleY = wayfinderCanvas.height / rect.height;
+      const x = (e.clientX - rect.left) * scaleX;
+      const y = (e.clientY - rect.top) * scaleY;
+      const nx = (x - wayfinderCx) / wayfinderScale + wayfinderCenterX;
+      const ny = -(y - wayfinderCy) / wayfinderScale + wayfinderCenterY;
+      camera.position.x = nx;
+      camera.position.y = ny;
+    }
+
+    function searchSources(q) {
+      if (!pointsData.length || !q || !q.trim()) return [];
+      const lower = q.trim().toLowerCase();
+      return pointsData
+        .map((p, i) => ({ ...p, index: i }))
+        .filter(p => {
+          const u = (p.username || '').toLowerCase();
+          const d = (p.description || '').toLowerCase();
+          return u.includes(lower) || d.includes(lower);
+        })
+        .slice(0, 12);
+    }
+
+    function zoomToPoint(index) {
+      const pt = pointsData[index];
+      if (!pt) return;
+      camera.position.x = pt.x;
+      camera.position.y = pt.y;
+      if (searchResults) searchResults.classList.remove('visible');
+      if (searchInput) searchInput.value = '';
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    function setupSearch() {
+      if (!searchInput || !searchResults) return;
+      searchInput.addEventListener('input', () => {
+        const q = searchInput.value;
+        const hits = searchSources(q);
+        searchResults.innerHTML = '';
+        if (hits.length === 0) { searchResults.classList.remove('visible'); return; }
+        searchResults.classList.add('visible');
+        hits.forEach(p => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.innerHTML = `<span class="result-username">${escapeHtml(p.username || 'Unknown')}</span>${p.description ? `<div class="result-desc">${escapeHtml(p.description.slice(0, 60))}${p.description.length > 60 ? '…' : ''}</div>` : ''}`;
+          btn.addEventListener('click', () => zoomToPoint(p.index));
+          searchResults.appendChild(btn);
+        });
+      });
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') { searchResults.classList.remove('visible'); searchInput.blur(); }
+        if (e.key === 'Enter') {
+          const hits = searchSources(searchInput.value);
+          if (hits.length > 0) zoomToPoint(hits[0].index);
+        }
+      });
+      document.addEventListener('click', (e) => {
+        if (!searchWrap.contains(e.target)) searchResults.classList.remove('visible');
+      });
+    }
+
+    function updateClusterLabels() {
+      clusterLabelsEl.innerHTML = '';
+      clusterLabelDivs.clear();
+    }
+
+
+    function openImagePanel(index) {
+      const d = pointsData[index];
+      if (!d) return;
+      panelTitle.textContent = d.username || 'Image';
+      const url = getImageUrl(d);
+      panelBody.innerHTML = '';
+      if (url) {
+        const img = document.createElement('img');
+        img.src = url;
+        img.alt = d.description || '';
+        panelBody.appendChild(img);
+      }
+      const srcDiv = document.createElement('div');
+      srcDiv.className = 'source';
+      const postUrl = d.post_url || (d.image_url && !d.image_url.startsWith('file://') ? d.image_url : null);
+      if (postUrl) {
+        srcDiv.innerHTML = `<a href="${escapeAttr(postUrl)}" target="_blank" rel="noopener">View source</a>`;
+      } else {
+        srcDiv.textContent = 'No source link';
+      }
+      panelBody.appendChild(srcDiv);
+      if (d.description) {
+        const descDiv = document.createElement('div');
+        descDiv.className = 'description';
+        descDiv.textContent = d.description;
+        panelBody.appendChild(descDiv);
+      }
+      panel.classList.add('open');
+    }
+
+    function openClusterPanel(clusterId) {
+      const meta = clustersData[clusterId];
+      if (!meta) return;
+      panelTitle.textContent = meta.label || `Cluster ${clusterId}`;
+      panelBody.innerHTML = '';
+      const analysisDiv = document.createElement('div');
+      analysisDiv.className = 'cluster-analysis';
+      analysisDiv.textContent = meta.analysis || 'No analysis for this cluster yet.';
+      panelBody.appendChild(analysisDiv);
+      panel.classList.add('open');
+    }
+
+    function escapeAttr(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML.replace(/"/g, '&quot;');
+    }
+
+    panelClose.addEventListener('click', () => panel.classList.remove('open'));
+
+    function getOrthoSize() {
+      const aspect = window.innerWidth / window.innerHeight;
+      return (baseOrthoSize / zoomLevel) * Math.min(aspect, 1);
+    }
+
+    function onPointerDown(e) {
+      if (e.button !== 0) return;
+      isDragging = true;
+      dragStart.x = e.clientX;
+      dragStart.y = e.clientY;
+      camStart.x = camera.position.x;
+      camStart.y = camera.position.y;
+    }
+
+    function onPointerMove(e) {
+      if (isDragging) {
+        const dx = e.clientX - dragStart.x;
+        const dy = e.clientY - dragStart.y;
+        const orthoSize = getOrthoSize();
+        const worldPerPixel = (2 * orthoSize) / window.innerHeight;
+        camera.position.x = camStart.x - dx * worldPerPixel;
+        camera.position.y = camStart.y + dy * worldPerPixel;
+      }
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+    }
+
+    function onPointerUp() {
+      isDragging = false;
+    }
+
+    function onWheel(e) {
+      e.preventDefault();
+      const delta = e.deltaY > 0 ? -0.1 : 0.1;
+      zoomLevel = Math.max(0.3, Math.min(15, zoomLevel + delta));
+      const aspect = window.innerWidth / window.innerHeight;
+      const orthoSize = baseOrthoSize / zoomLevel;
+      camera.left = -orthoSize * aspect;
+      camera.right = orthoSize * aspect;
+      camera.top = orthoSize;
+      camera.bottom = -orthoSize;
+      camera.updateProjectionMatrix();
+    }
+
+    function updateHover() {
+      raycaster.setFromCamera(mouse, camera);
+      if (!spriteGroup) return;
+      const imagePlanes = spriteGroup.children.filter(c => !c.userData.isBorder);
+      const hits = raycaster.intersectObjects(imagePlanes);
+      const prev = hoveredSprite.current;
+      let next = null;
+      if (hits.length > 0) {
+        next = hits[0].object;
+        const idx = next.userData.index;
+        const d = pointsData[idx];
+        tooltip.innerHTML = '';
+        if (d.description) {
+          const p = document.createElement('div');
+          p.className = 'tt-desc';
+          p.textContent = d.description.slice(0, 120) + (d.description.length > 120 ? '…' : '');
+          tooltip.appendChild(p);
+        }
+        tooltip.classList.add('visible');
+        tooltip.style.left = (mouse.x * 0.5 + 0.5) * window.innerWidth + 14 + 'px';
+        tooltip.style.top = (-mouse.y * 0.5 + 0.5) * window.innerHeight + 14 + 'px';
+      } else {
+        tooltip.classList.remove('visible');
+      }
+      spriteGroup.children.forEach(obj => {
+        if (obj.userData.isBorder) return;
+        const isHover = obj === next;
+        const scale = isHover ? SPRITE_HOVER_SCALE : 1;
+        obj.scale.setScalar(scale);
+        const borderSibling = spriteGroup.children.find(
+          c => c.userData.isBorder && c.userData.index === obj.userData.index
+        );
+        if (borderSibling) {
+          borderSibling.scale.setScalar(isHover ? 1.02 * SPRITE_HOVER_SCALE : 1.02);
+          borderSibling.position.z = isHover ? -0.02 : -0.01;
+          borderSibling.material.opacity = isHover ? 0.45 : BORDER_ALPHA;
+        }
+      });
+      hoveredSprite.current = next;
+    }
+
+    function onClick(e) {
+      if (isDragging) return;
+      mouse.x = (e.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      if (!spriteGroup) return;
+      const imagePlanes = spriteGroup.children.filter(c => !c.userData.isBorder);
+      const hits = raycaster.intersectObjects(imagePlanes);
+      if (hits.length > 0) {
+        const idx = hits[0].object.userData.index;
+        openImagePanel(idx);
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      updateHover();
+      if (wayfinderCanvas && pointsData.length) drawWayfinder();
+      renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', () => {
+      if (!camera || !renderer) return;
+      const aspect = window.innerWidth / window.innerHeight;
+      const orthoSize = baseOrthoSize / zoomLevel;
+      camera.left = -orthoSize * aspect;
+      camera.right = orthoSize * aspect;
+      camera.top = orthoSize;
+      camera.bottom = -orthoSize;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    canvas.addEventListener('mousedown', onPointerDown);
+    window.addEventListener('mousemove', onPointerMove);
+    window.addEventListener('mouseup', onPointerUp);
+    window.addEventListener('mouseleave', onPointerUp);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    canvas.addEventListener('click', onClick);
+
+    if (wayfinderEl) wayfinderEl.addEventListener('click', onWayfinderClick);
+    setupSearch();
+
+    loadData()
+      .then(() => {
+        buildScene();
+      })
+      .then(animate)
+      .catch(err => {
+        document.body.innerHTML = '<pre style="color:#e8e0d0;padding:2rem;font-size:14px;">' + err.message + '</pre>';
+      });
+  </script>
+</body>
+</html>

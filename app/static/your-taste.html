@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TasteMaker · Your Taste</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&family=DM+Serif+Display&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #0f0f0e;
+      --surface: #1a1a18;
+      --border: #2a2a26;
+      --text: #e8e6e3;
+      --muted: #8a8784;
+      --accent: #c4a574;
+      --accent-dim: #8b7355;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'DM Sans', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      line-height: 1.5;
+    }
+    .container { max-width: 640px; margin: 0 auto; padding: 3rem 1.5rem; }
+    h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: 1.75rem;
+      font-weight: 400;
+      color: var(--accent);
+      margin-bottom: 1.5rem;
+    }
+    .tabs { display: flex; gap: 0; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); }
+    .tab { padding: 0.5rem 1rem; font-size: 0.9rem; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; display: inline-flex; align-items: center; gap: 0.35rem; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab-dot {
+      width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+    }
+    .taste-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+    }
+    .taste-themes { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 1rem; }
+    .taste-themes .tag { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.5rem; font-size: 0.85rem; color: var(--text); }
+    .taste-card .prose { white-space: pre-wrap; font-size: 0.95rem; line-height: 1.6; color: var(--text); }
+    .taste-need { font-size: 0.85rem; color: var(--muted); margin-bottom: 1rem; }
+    .taste-need.reanalyze { color: var(--accent); }
+    .btn { background: var(--accent); color: var(--bg); border: none; border-radius: 6px; padding: 0.6rem 1rem; font-size: 0.9rem; font-weight: 500; cursor: pointer; font-family: inherit; }
+    .btn:hover { opacity: 0.9; }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .taste-empty { color: var(--muted); margin-bottom: 1rem; }
+    .taste-empty a { color: var(--accent); text-decoration: none; }
+    .taste-updated { font-size: 0.8rem; color: var(--muted); margin-top: 1rem; }
+    .skeleton { background: linear-gradient(90deg, var(--border) 25%, var(--surface) 50%, var(--border) 75%); background-size: 200% 100%; animation: skeleton 1.2s ease-in-out infinite; border-radius: 6px; }
+    @keyframes skeleton { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    .skeleton-taste { height: 200px; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <nav class="tabs" id="tabs">
+      <a href="/" class="tab">Ingestion</a>
+      <a href="/analyses" class="tab">Analyses</a>
+      <a href="/your-taste" class="tab active" id="tabYourTaste">Your Taste</a>
+      <a href="/find-similar" class="tab">Find similar</a>
+    </nav>
+    <h1>TasteMaker</h1>
+
+    <div id="content">
+      <div class="skeleton skeleton-taste"></div>
+    </div>
+  </div>
+
+  <script>
+    function escapeAttr(s) {
+      if (s == null) return '';
+      return String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+    function stripMarkdown(s) {
+      if (s == null) return '';
+      return String(s).replace(/\*\*/g, '').replace(/\*/g, '');
+    }
+    function formatTasteContent(raw) {
+      var text = stripMarkdown(raw || '');
+      var themes = [];
+      var prose = text;
+      var themesMatch = text.match(/^Themes:\s*(.+?)(?=\n\n|\n[A-Z]|$)/im);
+      if (themesMatch) {
+        themes = themesMatch[1].split(',').map(function(t) { return t.trim(); }).filter(Boolean);
+        prose = text.replace(/^Themes:\s*[^\n]+\n?/im, '').trim();
+      }
+      return { themes: themes, prose: prose };
+    }
+    async function load() {
+      const el = document.getElementById('content');
+      try {
+        const res = await fetch('/api/taste');
+        if (!res.ok) throw new Error(res.statusText);
+        const data = await res.json();
+        const content = data.content;
+        const needs = data.needs_reanalysis === true;
+        const updatedAt = data.updated_at;
+
+        if (!content) {
+          el.innerHTML = '<p class="taste-empty">No overall taste yet. Run an analysis to synthesize all your ingested collections into one profile.</p>' +
+            (needs ? '<p class="taste-need reanalyze">You have collections ready. Click below to generate your taste profile.</p><button class="btn" id="btnAnalyze">Generate your taste</button>' : '<button class="btn" id="btnAnalyze">Generate your taste</button>');
+        } else {
+          var parsed = formatTasteContent(content);
+          var themesHtml = '';
+          if (parsed.themes.length) {
+            themesHtml = '<div class="taste-themes">' + parsed.themes.map(function(t) { return '<span class="tag">' + escapeHtml(t) + '</span>'; }).join('') + '</div>';
+          }
+          var needBlock = '';
+          if (needs) needBlock = '<p class="taste-need reanalyze">You have new ingestions. Re-analyze to update your taste profile.</p><button class="btn" id="btnAnalyze">Re-analyze</button>';
+          el.innerHTML = needBlock +
+            '<div class="taste-card">' + themesHtml + '<div class="prose">' + escapeHtml(parsed.prose) + '</div>' +
+            (updatedAt ? '<p class="taste-updated">Last updated: ' + escapeHtml(formatDate(updatedAt)) + '</p>' : '') + '</div>' +
+            (needs ? '' : '<button class="btn" id="btnAnalyze">Re-analyze</button>');
+        }
+
+        var btn = document.getElementById('btnAnalyze');
+        if (btn) btn.onclick = runAnalyze;
+      } catch (e) {
+        el.innerHTML = '<p class="taste-empty">Could not load: ' + escapeHtml(e.message) + '</p>';
+      }
+    }
+
+    function escapeHtml(s) {
+      if (s == null) return '';
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    function formatDate(iso) {
+      if (!iso) return '';
+      try {
+        const d = new Date(iso);
+        return d.toLocaleDateString(undefined, { dateStyle: 'medium' }) + ' ' + d.toLocaleTimeString(undefined, { timeStyle: 'short' });
+      } catch { return iso; }
+    }
+
+    async function runAnalyze() {
+      const btn = document.getElementById('btnAnalyze');
+      if (!btn) return;
+      btn.disabled = true;
+      btn.textContent = 'Analyzing…';
+      try {
+        const res = await fetch('/api/taste/analyze', { method: 'POST' });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          throw new Error(err.detail || err.message || res.statusText);
+        }
+        const data = await res.json();
+        load();
+      } catch (e) {
+        alert(e.message || 'Analysis failed');
+        btn.disabled = false;
+        btn.textContent = 'Re-analyze';
+      }
+    }
+
+    load();
+    fetch('/api/taste/status').then(r => r.json()).then(d => {
+      if (d.needs_reanalysis) {
+        const t = document.getElementById('tabYourTaste');
+        if (t && !t.querySelector('.tab-dot')) { const dot = document.createElement('span'); dot.className = 'tab-dot'; dot.title = 'New ingestions — re-analyze your taste'; t.appendChild(dot); }
+      }
+    }).catch(() => {});
+  </script>
+</body>
+</html>

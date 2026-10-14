@@ -153,11 +153,21 @@
       text-decoration: none;
     }
     .source-list .url a:hover { text-decoration: underline; }
+    .ingest-note {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+      line-height: 1.4;
+    }
+    .ingest-note strong { color: var(--text); }
+    .ingest-archive { font-size: 0.85rem; margin-top: 0.75rem; }
+    .ingest-archive a { color: var(--accent); text-decoration: none; }
+    .ingest-archive a:hover { text-decoration: underline; }
     .ingest-btn {
       width: 100%;
       padding: 0.9rem;
       font-size: 1rem;
-      margin-top: 0.5rem;
+      margin-top: 0;
     }
     .output {
       margin-top: 1.5rem;
@@ -166,19 +176,39 @@
       border-radius: 6px;
       border: 1px solid var(--border);
       font-size: 0.85rem;
-      white-space: pre-wrap;
-      max-height: 280px;
+      max-height: 420px;
       overflow-y: auto;
     }
+    .output pre { white-space: pre-wrap; margin: 0; }
+    .output .result-header { color: var(--accent); font-weight: 500; margin-bottom: 1rem; }
+    .output .result-section { margin-bottom: 1rem; }
+    .output .result-section:last-child { margin-bottom: 0; }
+    .output .result-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); margin-bottom: 0.25rem; }
+    .output .result-list { color: var(--text); }
+    .output .result-mood { color: var(--text); line-height: 1.5; }
+    .output .result-directions { list-style: none; padding-left: 0; }
+    .output .result-directions li { padding: 0.25rem 0; padding-left: 0.75rem; border-left: 2px solid var(--accent-dim); margin-bottom: 0.35rem; }
     .output.success { border-color: var(--accent-dim); }
     .output.error { border-color: #c45c5c; }
     .output:empty { display: none; }
     .hidden { display: none; }
     input[type="file"] { display: none; }
+    .tabs { display: flex; gap: 0; margin-bottom: 1.5rem; border-bottom: 1px solid var(--border); }
+    .tab { padding: 0.5rem 1rem; font-size: 0.9rem; color: var(--muted); text-decoration: none; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+    .tab:hover { color: var(--text); }
+    .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+    .tab { display: inline-flex; align-items: center; gap: 0.35rem; }
+    .tab-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
   </style>
 </head>
 <body>
   <div class="container">
+    <nav class="tabs" id="tabs">
+      <a href="/" class="tab active">Ingestion</a>
+      <a href="/analyses" class="tab">Analyses</a>
+      <a href="/your-taste" class="tab" id="tabYourTaste">Your Taste</a>
+      <a href="/find-similar" class="tab">Find similar</a>
+    </nav>
     <h1>TasteMaker</h1>
     <p class="subtitle">Add sources, then run ingestion to scrape, embed, and analyze.</p>
 
@@ -211,7 +241,10 @@
     </div>
 
     <div class="card">
+      <h2>Run ingestion</h2>
+      <p class="ingest-note">Processes <strong>every source listed above</strong>. Uses tokens and credits (Apify for Pinterest, Claude for analysis). Remove sources after ingesting to avoid re-running.</p>
       <button class="ingest-btn" id="ingestBtn">Run ingestion</button>
+      <p class="ingest-archive" id="ingestArchive"></p>
       <div class="output" id="output"></div>
     </div>
   </div>
@@ -224,7 +257,15 @@
       return res.json();
     }
 
+    function updateIngestButton(sources) {
+      const n = (sources.pinterest?.length || 0) + (sources.cosmos?.length || 0) + (sources.screenshots?.length || 0);
+      const btn = document.getElementById('ingestBtn');
+      btn.textContent = n ? 'Run ingestion (' + n + ' source' + (n !== 1 ? 's' : '') + ')' : 'Run ingestion (add sources above)';
+      btn.disabled = n === 0;
+    }
+
     function renderLists(sources) {
+      updateIngestButton(sources);
       const pinList = document.getElementById('pinterestList');
       const cosList = document.getElementById('cosmosList');
       const shotList = document.getElementById('screenshotList');
@@ -254,6 +295,22 @@
     async function loadSources() {
       const sources = await fetchSources();
       renderLists(sources);
+    }
+
+    async function loadArchiveLink() {
+      const el = document.getElementById('ingestArchive');
+      try {
+        const res = await fetch('/api/collections');
+        const collections = await res.json();
+        const n = Array.isArray(collections) ? collections.length : 0;
+        if (n > 0) {
+          el.innerHTML = 'Already ingested: <a href="/analyses">' + n + ' collection' + (n !== 1 ? 's' : '') + ' in your archive — View analyses</a>';
+        } else {
+          el.innerHTML = '';
+        }
+      } catch {
+        el.innerHTML = '';
+      }
     }
 
     document.getElementById('addPinterest').onclick = async () => {
@@ -361,11 +418,81 @@
       }
     });
 
+    function escapeHtml(s) {
+      if (s == null) return '';
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+
+    function formatIngestResult(data) {
+      if (data.error) {
+        return '<pre>' + escapeHtml(data.error) + '</pre>';
+      }
+
+      const results = data.results;
+      const totalRecords = data.total_records ?? 0;
+
+      if (Array.isArray(results) && results.length > 0) {
+        const srcLabel = (t) => ({ pinterest: 'Pinterest', cosmos: 'Cosmos', manual: 'Screenshot' })[t] || t;
+        let html = '<div class="result-header">Ingestion complete · ' + results.length + ' source' + (results.length !== 1 ? 's' : '') + ', ' + totalRecords + ' image' + (totalRecords !== 1 ? 's' : '') + ' saved.</div>';
+        html += '<div class="result-section"><div class="result-label">What was ingested</div><ul class="result-directions" style="border-left:0;padding-left:0;">';
+        results.forEach(r => {
+          const typeLabel = srcLabel(r.source_type);
+          const name = escapeHtml(r.source_label || r.collection_name);
+          const n = r.records_count ?? 0;
+          html += '<li style="margin-bottom:0.5rem;">' + typeLabel + ': <strong>' + name + '</strong> (' + n + ' image' + (n !== 1 ? 's' : '') + ')</li>';
+        });
+        html += '</ul></div>';
+        html += '<div class="result-section"><a href="/analyses" style="color:var(--accent);">View all analyses →</a></div>';
+        return html;
+      }
+
+      const n = data.records ?? 0;
+      const analysis = data.analysis || {};
+      if (!analysis.material_vocabulary && !analysis.mood_atmosphere && analysis.raw_response) {
+        return '<pre>' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>';
+      }
+      const arr = (v) => Array.isArray(v) ? v : [];
+      const material = arr(analysis.material_vocabulary);
+      const spatial = arr(analysis.spatial_qualities);
+      const forms = arr(analysis.recurring_forms);
+      const palette = arr(analysis.color_palette);
+      const directions = arr(analysis.installation_directions);
+      const mood = analysis.mood_atmosphere || '';
+
+      let html = '<div class="result-header">Ingestion complete · ' + n + ' image' + (n !== 1 ? 's' : '') + ' saved.</div>';
+      if (material.length) {
+        html += '<div class="result-section"><div class="result-label">Material vocabulary</div><div class="result-list">' + material.map(m => escapeHtml(m)).join(', ') + '</div></div>';
+      }
+      if (spatial.length) {
+        html += '<div class="result-section"><div class="result-label">Spatial qualities</div><div class="result-list">' + spatial.map(s => escapeHtml(s)).join(', ') + '</div></div>';
+      }
+      if (forms.length) {
+        html += '<div class="result-section"><div class="result-label">Recurring forms</div><div class="result-list">' + forms.map(f => escapeHtml(f)).join(', ') + '</div></div>';
+      }
+      if (palette.length) {
+        html += '<div class="result-section"><div class="result-label">Color palette</div><div class="result-list">' + palette.map(p => escapeHtml(p)).join(', ') + '</div></div>';
+      }
+      if (mood) {
+        html += '<div class="result-section"><div class="result-label">Mood & atmosphere</div><p class="result-mood">' + escapeHtml(mood) + '</p></div>';
+      }
+      if (directions.length) {
+        html += '<div class="result-section"><div class="result-label">Installation directions</div><ul class="result-directions">';
+        directions.forEach(d => { html += '<li>' + escapeHtml(String(d)) + '</li>'; });
+        html += '</ul></div>';
+      }
+      if (html === '<div class="result-header">Ingestion complete · ' + n + ' image' + (n !== 1 ? 's' : '') + ' saved.</div>') {
+        return html + '<p class="result-mood" style="color:var(--muted)">No analysis yet. <a href="/analyses">View analyses</a> after ingestion.</p>';
+      }
+      return html + '<div class="result-section"><a href="/analyses" style="color:var(--accent);">View all analyses →</a></div>';
+    }
+
     document.getElementById('ingestBtn').onclick = async () => {
       const btn = document.getElementById('ingestBtn');
       const out = document.getElementById('output');
       btn.disabled = true;
-      out.textContent = 'Running...';
+      out.innerHTML = 'Running…';
       out.className = 'output';
       try {
         const res = await fetch('/api/ingest', { method: 'POST' });
@@ -377,16 +504,24 @@
           throw new Error(res.ok ? 'Invalid response' : (text || res.statusText));
         }
         if (data.error) throw new Error(data.error);
-        out.textContent = JSON.stringify(data, null, 2);
+        out.innerHTML = formatIngestResult(data);
         out.className = 'output success';
+        loadArchiveLink();
       } catch (e) {
-        out.textContent = e.message || String(e);
+        out.innerHTML = '<pre>' + escapeHtml(e.message || String(e)) + '</pre>';
         out.className = 'output error';
       }
       btn.disabled = false;
     };
 
     loadSources();
+    loadArchiveLink();
+    fetch('/api/taste/status').then(r => r.json()).then(d => {
+      if (d.needs_reanalysis) {
+        const t = document.getElementById('tabYourTaste');
+        if (t && !t.querySelector('.tab-dot')) { const dot = document.createElement('span'); dot.className = 'tab-dot'; dot.title = 'New ingestions — re-analyze your taste'; t.appendChild(dot); }
+      }
+    }).catch(() => {});
   </script>
 </body>
 </html>

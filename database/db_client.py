@@ -57,6 +57,11 @@ def insert_image(
     return result.data[0]
 
 
+def delete_images_for_collection(client: Client, collection_name: str, source_platform: str) -> None:
+    """Remove all images for a collection (so we can replace with fresh ingest, avoiding duplicates)."""
+    client.table("images").delete().eq("source_collection", collection_name).eq("source_platform", source_platform).execute()
+
+
 def insert_images_batch(client: Client, records: list[dict]) -> list[dict]:
     """Insert multiple image records in a single batch."""
     if not records:
@@ -98,6 +103,129 @@ def upsert_collection(
         on_conflict="collection_name,source_platform",
     ).execute()
     return result.data[0] if result.data else data
+
+
+def list_collections(client: Client, limit: int = 50) -> list[dict]:
+    """List all collections, most recently updated first."""
+    result = (
+        client.table("collections")
+        .select("*")
+        .order("updated_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
+def get_sample_images(
+    client: Client,
+    collection_name: str,
+    source_platform: str,
+    limit: int = 6,
+) -> list[dict]:
+    """Get sample image URLs for a collection (for thumbnails on analyses page)."""
+    result = (
+        client.table("images")
+        .select("image_url, original_metadata, local_path")
+        .eq("source_collection", collection_name)
+        .eq("source_platform", source_platform)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
+def get_images_metadata(client: Client, image_ids: list[str]) -> dict[str, dict]:
+    """Map image id -> original_metadata (for linking search results back to their source)."""
+    if not image_ids:
+        return {}
+    result = (
+        client.table("images")
+        .select("id, original_metadata")
+        .in_("id", image_ids)
+        .execute()
+    )
+    return {str(r["id"]): r.get("original_metadata") or {} for r in (result.data or [])}
+
+
+def get_collection_by_id(client: Client, collection_id: str) -> Optional[dict]:
+    """Get a single collection by UUID."""
+    result = (
+        client.table("collections")
+        .select("*")
+        .eq("id", collection_id)
+        .maybe_single()
+        .execute()
+    )
+    return result.data
+
+
+def delete_collection_and_images(client: Client, collection_id: str) -> None:
+    """Delete a collection and all its images. Uses collection id."""
+    coll = get_collection_by_id(client, collection_id)
+    if not coll:
+        return
+    name = coll.get("collection_name") or ""
+    platform = coll.get("source_platform") or ""
+    client.table("images").delete().eq("source_collection", name).eq("source_platform", platform).execute()
+    client.table("collections").delete().eq("id", collection_id).execute()
+
+
+def update_collection_name(
+    client: Client,
+    collection_id: str,
+    new_name: str,
+) -> dict:
+    """Update collection display name and sync source_collection on all its images."""
+    coll = get_collection_by_id(client, collection_id)
+    if not coll:
+        raise ValueError("Collection not found")
+    old_name = coll.get("collection_name") or ""
+    platform = coll.get("source_platform") or ""
+    new_name = (new_name or "").strip() or old_name
+    client.table("collections").update({"collection_name": new_name}).eq("id", collection_id).execute()
+    client.table("images").update({"source_collection": new_name}).eq("source_collection", old_name).eq("source_platform", platform).execute()
+    return {**coll, "collection_name": new_name}
+
+
+USER_TASTE_ID = "default"
+
+
+def get_user_taste(client: Client) -> Optional[dict]:
+    """Get the stored overall taste (single row, id=default)."""
+    result = (
+        client.table("user_taste")
+        .select("content, updated_at")
+        .eq("id", USER_TASTE_ID)
+        .limit(1)
+        .execute()
+    )
+    if not result.data or not isinstance(result.data, list) or len(result.data) == 0:
+        return None
+    row = result.data[0]
+    return row if isinstance(row, dict) else None
+
+
+def set_user_taste(client: Client, content: str) -> dict:
+    """Store or update the overall taste. Upserts the single row."""
+    from datetime import datetime
+    data = {"id": USER_TASTE_ID, "content": content, "updated_at": datetime.utcnow().isoformat()}
+    result = client.table("user_taste").upsert(data, on_conflict="id").execute()
+    return result.data[0] if result.data else data
+
+
+def get_latest_collection_updated_at(client: Client) -> Optional[str]:
+    """Return the most recent collection updated_at (for needs_reanalysis check)."""
+    result = (
+        client.table("collections")
+        .select("updated_at")
+        .order("updated_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    if result.data and result.data[0].get("updated_at"):
+        return result.data[0]["updated_at"]
+    return None
 
 
 def search_similar_images(

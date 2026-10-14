@@ -1,0 +1,801 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TasteMaker · Constellation</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #1e1e1e;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, sans-serif;
+    }
+    #canvas { display: block; width: 100vw; height: 100vh; cursor: grab; }
+    #canvas:active { cursor: grabbing; }
+    #back {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 20;
+      color: #c4a574;
+      text-decoration: none;
+      font-size: 13px;
+      padding: 6px 10px;
+      background: rgba(18, 18, 22, 0.9);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 6px;
+      transition: background 0.15s;
+    }
+    #back:hover { background: rgba(40, 40, 48, 0.95); }
+    #legend {
+      position: fixed;
+      bottom: 12px;
+      left: 12px;
+      z-index: 20;
+      font-size: 11px;
+      color: #6b6b6b;
+      max-width: 260px;
+      line-height: 1.4;
+    }
+    #legend strong { color: #8a8784; }
+    #tooltip {
+      position: fixed;
+      pointer-events: none;
+      z-index: 10;
+      background: rgba(18, 18, 22, 0.95);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px;
+      padding: 10px 12px;
+      max-width: 280px;
+      opacity: 0;
+      transition: opacity 0.15s ease;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    #tooltip.visible { opacity: 1; }
+    #tooltip img {
+      display: block;
+      width: 120px;
+      height: 120px;
+      object-fit: cover;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      background: #1a1a1f;
+    }
+    #tooltip .username {
+      color: #e8e6e3;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    #tooltip .username.empty { color: #6b6b6b; }
+    #wayfinder {
+      position: fixed;
+      bottom: 12px;
+      right: 12px;
+      z-index: 20;
+      background: rgba(18, 18, 22, 0.92);
+      border: 2px solid white;
+      border-radius: 8px;
+      padding: 6px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      cursor: pointer;
+    }
+    #wayfinder canvas {
+      display: block;
+      border-radius: 4px;
+    }
+    #wayfinder-label {
+      font-size: 10px;
+      color: #6b6b6b;
+      text-align: center;
+      margin-top: 4px;
+    }
+    #search-wrap {
+      position: fixed;
+      bottom: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      width: min(320px, calc(100vw - 24px));
+    }
+    #search-wrap .inner { position: relative; width: 100%; }
+    #search-wrap input {
+      width: 100%;
+      padding: 10px 16px 10px 40px;
+      font-size: 14px;
+      color: #e8e6e3;
+      background: rgba(18, 18, 22, 0.6);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 24px;
+      outline: none;
+      font-family: inherit;
+    }
+    #search-wrap input::placeholder { color: #6b6b6b; }
+    #search-wrap input:focus { border-color: rgba(196, 165, 116, 0.5); }
+    #search-wrap .search-icon {
+      position: absolute;
+      left: 14px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: #6b6b6b;
+      font-size: 14px;
+      pointer-events: none;
+    }
+    #search-results {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: calc(100% + 6px);
+      max-height: 200px;
+      overflow-y: auto;
+      background: rgba(18, 18, 22, 0.85);
+      backdrop-filter: blur(12px);
+      border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      display: none;
+    }
+    #search-results.visible { display: block; }
+    #search-results button {
+      width: 100%;
+      padding: 8px 14px;
+      text-align: left;
+      font-size: 13px;
+      color: #e8e6e3;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-family: inherit;
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+    }
+    #search-results button:last-child { border-bottom: none; }
+    #search-results button:hover { background: rgba(255,255,255,0.06); }
+    #search-results .result-username { font-weight: 500; }
+    #search-results .result-desc { color: #6b6b6b; font-size: 11px; margin-top: 2px; }
+  </style>
+</head>
+<body>
+  <canvas id="canvas"></canvas>
+  <a id="back" href="/">← Back to TasteMaker</a>
+  <div id="search-wrap">
+    <div class="inner">
+      <span class="search-icon" aria-hidden="true">⌕</span>
+      <input id="search-input" type="text" placeholder="Search by username or caption…" autocomplete="off" />
+      <div id="search-results"></div>
+    </div>
+  </div>
+  <div id="wayfinder" title="Click to jump to a spot in the constellation">
+    <canvas id="wayfinder-canvas" width="200" height="100"></canvas>
+    <div id="wayfinder-label">Click to jump · box = your view</div>
+  </div>
+  <div id="legend">
+    <strong>How clusters work</strong> — 3D position comes from UMAP (similar images → close in space). 
+    Color comes from HDBSCAN: it finds dense blobs in that 3D space and gives each blob a color; 
+    same color = same blob = visually similar. Grey = no blob (noise). 
+    Zoom in and center a dot to see its image.
+  </div>
+  <div id="tooltip">
+    <img id="tooltip-img" src="" alt="">
+    <div id="tooltip-username" class="username"></div>
+  </div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // Supabase URL will be injected by server
+    const SUPABASE_URL = '';
+
+    const canvas = document.getElementById('canvas');
+    const tooltip = document.getElementById('tooltip');
+    const tooltipImg = document.getElementById('tooltip-img');
+    const tooltipUsername = document.getElementById('tooltip-username');
+
+    const scene = new THREE.Scene();
+    // Keep background color fixed and flat
+    scene.background = new THREE.Color(0x1e1e1e);
+    scene.backgroundIntensity = 1.0;
+
+    const wayfinderEl = document.getElementById('wayfinder');
+    const wayfinderCanvas = document.getElementById('wayfinder-canvas');
+    const searchInput = document.getElementById('search-input');
+    const searchResults = document.getElementById('search-results');
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.0001, 3000);
+    camera.position.set(0, 0, 38);
+
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+    const controls = new OrbitControls(camera, canvas);
+    controls.target.set(0, 0, 0);
+    controls.enableDamping = false; // Disable damping for instant zoom response
+    controls.minDistance = 0.0001; // Very small minimum to allow extremely close zoom
+    controls.maxDistance = Infinity; // Remove maximum distance constraint
+    controls.enableZoom = true;
+    controls.zoomSpeed = 3.0; // Increased zoom speed
+    controls.enablePan = true;
+    controls.panSpeed = 1.0;
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.PAN
+    };
+    // Allow camera to move through objects without collision
+    controls.screenSpacePanning = false;
+    
+
+    let pointsMesh = null;
+    let pointsData = [];
+    let thumbnailGroup = null;
+    const thumbSize = 0.12;
+    const mouse = new THREE.Vector2();
+    const raycaster = new THREE.Raycaster();
+    const raycasterObj = new THREE.Object3D();
+    const _pos = new THREE.Vector3();
+    const _ndc = new THREE.Vector3();
+    raycaster.params.Points.threshold = 0.12;
+    const hoveredIndex = { current: -1 };
+
+    const SPREAD = 9; // Reduced from 18 to bring images closer together
+    const ZOOM_SHOW_DISTANCE = 4;
+    const ZOOM_FULL_DISTANCE = 1.2;
+    const CENTER_NDC_RADIUS = 0.32;
+    const ZOOM_TO_DISTANCE = 1.4;
+
+    let wayfinderScale = 1;
+    let wayfinderMaxR = 1;
+    let wayfinderCx = 0;
+    let wayfinderCy = 0;
+    let wayfinderCenterX = 0;
+    let wayfinderCenterY = 0;
+
+    function smoothstep(edge0, edge1, x) {
+      const t = Math.max(0, Math.min(1, (x - edge0) / (edge1 - edge0)));
+      return t * t * (3 - 2 * t);
+    }
+
+    function clusterColor(cluster) {
+      if (cluster === -1) return [0.5, 0.5, 0.55];
+      const hue = (cluster * 0.618033989) % 1;
+      const c = new THREE.Color().setHSL(hue, 0.7, 0.65);
+      return [c.r, c.g, c.b];
+    }
+
+    function makeGlowTexture() {
+      const size = 64;
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const ctx = c.getContext('2d');
+      const g = ctx.createRadialGradient(size/2, size/2, 0, size/2, size/2, size/2);
+      g.addColorStop(0, 'rgba(255,255,255,0.9)');
+      g.addColorStop(0.2, 'rgba(255,255,255,0.4)');
+      g.addColorStop(0.5, 'rgba(255,255,255,0.08)');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0, 0, size, size);
+      const tex = new THREE.CanvasTexture(c);
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    function placeholderTexture() {
+      const c = document.createElement('canvas');
+      c.width = 2;
+      c.height = 2;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#2a2a2e';
+      ctx.fillRect(0, 0, 2, 2);
+      const t = new THREE.CanvasTexture(c);
+      t.needsUpdate = true;
+      return t;
+    }
+
+    function makeDotGridTexture() {
+      const size = 128;
+      const grid = 16;
+      const c = document.createElement('canvas');
+      c.width = size;
+      c.height = size;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#08080c';
+      ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = 'rgba(80, 80, 88, 0.35)';
+      for (let i = 0; i < size; i += grid) {
+        for (let j = 0; j < size; j += grid) {
+          ctx.beginPath();
+          ctx.moveTo(j - 2, i);
+          ctx.lineTo(j + 2, i);
+          ctx.moveTo(j, i - 2);
+          ctx.lineTo(j, i + 2);
+          ctx.stroke();
+        }
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      tex.repeat.set(40, 40);
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    function normalizePositions(data) {
+      let maxAbs = 0;
+      for (const p of data) {
+        const z = p.z ?? 0;
+        maxAbs = Math.max(maxAbs, Math.abs(p.x), Math.abs(p.y), Math.abs(z));
+      }
+      const scale = maxAbs > 0 ? SPREAD / maxAbs : 1;
+      return data.map(p => ({
+        ...p,
+        x: p.x * scale,
+        y: p.y * scale,
+        z: (p.z ?? 0) * scale,
+      }));
+    }
+
+    async function loadData() {
+      const res = await fetch('/constellation_data.json');
+      if (!res.ok) throw new Error('Failed to load constellation_data.json. Run the app and open /constellation, or run: python -m visualization.constellation to generate the data.');
+      const raw = await res.json();
+      // Support both v1 format (array) and v2 format ({ points, clusters })
+      const data = Array.isArray(raw) ? raw : (raw.points || []);
+      return normalizePositions(data);
+    }
+
+    function loadTexture(url) {
+      return new Promise((resolve, reject) => {
+        const loader = new THREE.TextureLoader();
+        loader.setCrossOrigin('anonymous');
+        loader.load(url, resolve, undefined, reject);
+      });
+    }
+
+    function buildScene(data) {
+      pointsData = data;
+
+      // Create curved background grid (single plane at fixed distance)
+      const dotGridTex = makeDotGridTexture();
+      const gridPlane = new THREE.Mesh(
+        new THREE.PlaneGeometry(900, 900),
+        new THREE.MeshBasicMaterial({
+          map: dotGridTex,
+          side: THREE.FrontSide,
+          depthWrite: false,
+        })
+      );
+      gridPlane.position.set(0, 0, -320);
+      scene.add(gridPlane);
+
+      const geometry = new THREE.BufferGeometry();
+      const positions = new Float32Array(data.length * 3);
+      const colors = new Float32Array(data.length * 3);
+      for (let i = 0; i < data.length; i++) {
+        positions[i * 3]     = data[i].x;
+        positions[i * 3 + 1] = data[i].y;
+        positions[i * 3 + 2] = data[i].z;
+        const [r, g, b] = clusterColor(data[i].cluster);
+        colors[i * 3]     = r;
+        colors[i * 3 + 1] = g;
+        colors[i * 3 + 2] = b;
+      }
+      geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const material = new THREE.PointsMaterial({
+        size: 0.08,
+        vertexColors: true,
+        sizeAttenuation: true,
+        map: makeGlowTexture(),
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+
+      const mesh = new THREE.Points(geometry, material);
+      scene.add(mesh);
+      pointsMesh = mesh;
+
+      thumbnailGroup = new THREE.Group();
+      scene.add(thumbnailGroup);
+      const loader = new THREE.TextureLoader();
+      loader.setCrossOrigin('anonymous');
+      data.forEach((datum, i) => {
+        const geom = new THREE.PlaneGeometry(thumbSize, thumbSize);
+        const mat = new THREE.MeshBasicMaterial({
+          map: placeholderTexture(),
+          side: THREE.DoubleSide,
+          transparent: true,
+          opacity: 0,
+          depthTest: false, // Disable depth testing so images don't block camera movement
+          depthWrite: false,
+        });
+        const plane = new THREE.Mesh(geom, mat);
+        plane.position.set(datum.x, datum.y, datum.z);
+        plane.userData = { index: i };
+        thumbnailGroup.add(plane);
+        let imageUrl = null;
+        if (datum.local_path) {
+          // Check if local_path is a Supabase storage path (e.g., instagram/...)
+          if (datum.local_path.startsWith('instagram/') || datum.local_path.startsWith('pinterest/') || 
+              datum.local_path.startsWith('cosmos/') || datum.local_path.startsWith('manual/')) {
+            // Construct Supabase storage URL
+            const supabaseUrl = SUPABASE_URL || '';
+            if (supabaseUrl) {
+              imageUrl = `${supabaseUrl}/storage/v1/object/public/images/${datum.local_path}`;
+            } else {
+              // Fallback to proxy if SUPABASE_URL not available
+              imageUrl = '/api/proxy-image?url=' + encodeURIComponent(datum.image_url || '');
+            }
+          } else if (datum.local_path.startsWith('data/')) {
+            // Local file path
+            imageUrl = '/api/local-image?path=' + encodeURIComponent(datum.local_path);
+          }
+        } else if (datum.image_url && !datum.image_url.startsWith('file://')) {
+          // Use proxy for external URLs to bypass CORS issues
+          if (datum.image_url.startsWith('http://') || datum.image_url.startsWith('https://')) {
+            imageUrl = '/api/proxy-image?url=' + encodeURIComponent(datum.image_url);
+          } else {
+            imageUrl = datum.image_url;
+          }
+        }
+        if (imageUrl) {
+          loadTexture(imageUrl)
+            .then(tex => {
+              tex.minFilter = THREE.LinearFilter;
+              tex.magFilter = THREE.LinearFilter;
+              plane.material.map = tex;
+              plane.material.needsUpdate = true;
+            })
+            .catch(() => {});
+        }
+      });
+
+      drawWayfinder();
+    }
+
+    function drawWayfinder() {
+      if (!wayfinderCanvas || !pointsData.length) return;
+      const w = wayfinderCanvas.width;
+      const h = wayfinderCanvas.height;
+      const ctx = wayfinderCanvas.getContext('2d');
+      ctx.fillStyle = '#1E1E1E';
+      ctx.fillRect(0, 0, w, h);
+      const pad = 10;
+      const cx = w / 2;
+      const cy = h / 2;
+      
+      // Calculate center of cluster to center it in wayfinder
+      let sumX = 0, sumY = 0;
+      pointsData.forEach(p => {
+        sumX += p.x;
+        sumY += p.y;
+      });
+      const centerX = sumX / pointsData.length;
+      const centerY = sumY / pointsData.length;
+      
+      // Calculate max distance from center for zoomed-in view
+      let maxR = 0;
+      pointsData.forEach(p => {
+        const dx = p.x - centerX;
+        const dy = p.y - centerY;
+        const r = Math.sqrt(dx * dx + dy * dy);
+        if (r > maxR) maxR = r;
+      });
+      // Make it even more zoomed in by using a smaller multiplier (was 2, then 1.5, now 1.0)
+      const scale = (Math.min(w, h) - pad * 2) / (1.0 * (maxR || 1));
+      wayfinderScale = scale;
+      wayfinderMaxR = maxR || 1;
+      wayfinderCx = cx;
+      wayfinderCy = cy;
+      wayfinderCenterX = centerX;
+      wayfinderCenterY = centerY;
+      pointsData.forEach(p => {
+        // Center the cluster by offsetting by the cluster center
+        const px = cx + (p.x - centerX) * scale;
+        const py = cy - (p.y - centerY) * scale;
+        const [r0, g0, b0] = clusterColor(p.cluster);
+        ctx.fillStyle = `rgb(${Math.round(r0*255)},${Math.round(g0*255)},${Math.round(b0*255)})`;
+        ctx.beginPath();
+        ctx.arc(px, py, 1.5, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      const target = controls.target;
+      const camDist = camera.position.distanceTo(target);
+      const viewHalf = (camDist / SPREAD) * scale * 0.9;
+      const boxW = Math.max(8, Math.min(w - pad * 2, viewHalf * 2));
+      const boxH = Math.max(6, boxW * (h / w));
+      // Account for centered cluster when drawing view box
+      const vx = cx + (target.x - centerX) * scale;
+      const vy = cy - (target.y - centerY) * scale;
+      ctx.strokeStyle = 'rgba(196, 165, 116, 0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([3, 2]);
+      ctx.strokeRect(vx - boxW / 2, vy - boxH / 2, boxW, boxH);
+      ctx.setLineDash([]);
+    }
+
+    function onWayfinderClick(e) {
+      if (!pointsData.length || !wayfinderCanvas) return;
+      const rect = wayfinderCanvas.getBoundingClientRect();
+      const scaleX = wayfinderCanvas.width / rect.width;
+      const scaleY = wayfinderCanvas.height / rect.height;
+      const x = (e.clientX - rect.left) * scaleX;
+      const y = (e.clientY - rect.top) * scaleY;
+      // Account for centered cluster when converting click position
+      const nx = (x - wayfinderCx) / wayfinderScale + wayfinderCenterX;
+      const ny = -(y - wayfinderCy) / wayfinderScale + wayfinderCenterY;
+      let best = 0;
+      let bestD = 1e9;
+      pointsData.forEach((p, i) => {
+        const d = (p.x - nx) ** 2 + (p.y - ny) ** 2;
+        if (d < bestD) { bestD = d; best = i; }
+      });
+      const pt = pointsData[best];
+      controls.target.set(pt.x, pt.y, pt.z);
+    }
+
+    function searchSources(q) {
+      if (!pointsData.length || !q || !q.trim()) return [];
+      const lower = q.trim().toLowerCase();
+      return pointsData
+        .map((p, i) => ({ ...p, index: i }))
+        .filter(p => {
+          const u = (p.username || '').toLowerCase();
+          const d = (p.description || '').toLowerCase();
+          return u.includes(lower) || d.includes(lower);
+        })
+        .slice(0, 12);
+    }
+
+    function zoomToPoint(index) {
+      const pt = pointsData[index];
+      if (!pt) return;
+      controls.target.set(pt.x, pt.y, pt.z);
+      const dir = new THREE.Vector3().subVectors(camera.position, controls.target).normalize();
+      camera.position.copy(controls.target).add(dir.multiplyScalar(ZOOM_TO_DISTANCE));
+      if (searchResults) searchResults.classList.remove('visible');
+      if (searchInput) searchInput.value = '';
+    }
+
+    function setupSearch() {
+      if (!searchInput || !searchResults) return;
+      searchInput.addEventListener('input', () => {
+        const q = searchInput.value;
+        const hits = searchSources(q);
+        searchResults.innerHTML = '';
+        if (hits.length === 0) {
+          searchResults.classList.remove('visible');
+          return;
+        }
+        searchResults.classList.add('visible');
+        hits.forEach(p => {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.innerHTML = `<span class="result-username">${escapeHtml(p.username || 'Unknown')}</span>${p.description ? `<div class="result-desc">${escapeHtml(p.description.slice(0, 60))}${p.description.length > 60 ? '…' : ''}</div>` : ''}`;
+          btn.addEventListener('click', () => zoomToPoint(p.index));
+          searchResults.appendChild(btn);
+        });
+      });
+      searchInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          searchResults.classList.remove('visible');
+          searchInput.blur();
+        }
+        if (e.key === 'Enter') {
+          const hits = searchSources(searchInput.value);
+          if (hits.length > 0) zoomToPoint(hits[0].index);
+        }
+      });
+      document.addEventListener('click', (e) => {
+        if (!searchWrap.contains(e.target)) searchResults.classList.remove('visible');
+      });
+    }
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s;
+      return div.innerHTML;
+    }
+    const searchWrap = document.getElementById('search-wrap');
+
+    function updateThumbnails() {
+      if (!thumbnailGroup || !pointsData.length) return;
+      const camPos = camera.position;
+      thumbnailGroup.children.forEach((plane, i) => {
+        _pos.set(pointsData[i].x, pointsData[i].y, pointsData[i].z);
+        const distance = camPos.distanceTo(_pos);
+        _ndc.copy(_pos).project(camera);
+        const inCenter = Math.abs(_ndc.x) <= CENTER_NDC_RADIUS && Math.abs(_ndc.y) <= CENTER_NDC_RADIUS;
+        const distFactor = 1 - smoothstep(ZOOM_FULL_DISTANCE, ZOOM_SHOW_DISTANCE, distance);
+        const opacity = distFactor * (inCenter ? 1 : (1 - smoothstep(0.2, CENTER_NDC_RADIUS, Math.max(Math.abs(_ndc.x), Math.abs(_ndc.y)))));
+        plane.visible = opacity > 0.04;
+        plane.material.opacity = Math.min(1, opacity * 1.2);
+        plane.lookAt(camPos);
+        const s = 0.8 + (1 - distance / ZOOM_SHOW_DISTANCE) * 0.7;
+        plane.scale.setScalar(Math.max(0.5, s));
+      });
+    }
+
+    function onMouseMove(event) {
+      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+    }
+
+    function updateTooltip() {
+      raycaster.setFromCamera(mouse, camera);
+      if (!pointsMesh) return;
+      const hits = raycaster.intersectObject(pointsMesh);
+      if (hits.length === 0) {
+        tooltip.classList.remove('visible');
+        hoveredIndex.current = -1;
+        return;
+      }
+      const idx = hits[0].index;
+      if (idx === hoveredIndex.current) return;
+      hoveredIndex.current = idx;
+      const p = pointsData[idx];
+      let url = '';
+      if (p.local_path) {
+        // Check if local_path is a Supabase storage path
+        if (p.local_path.startsWith('instagram/') || p.local_path.startsWith('pinterest/') || 
+            p.local_path.startsWith('cosmos/') || p.local_path.startsWith('manual/')) {
+          // Construct Supabase storage URL
+          const supabaseUrl = SUPABASE_URL || '';
+          if (supabaseUrl) {
+            url = `${supabaseUrl}/storage/v1/object/public/images/${p.local_path}`;
+          } else {
+            url = p.image_url || '';
+          }
+        } else if (p.local_path.startsWith('data/')) {
+          // Local file path
+          url = '/api/local-image?path=' + encodeURIComponent(p.local_path);
+        }
+      } else if (p.image_url && !p.image_url.startsWith('file://')) {
+        // Use proxy for external URLs to bypass CORS issues
+        if (p.image_url.startsWith('http://') || p.image_url.startsWith('https://')) {
+          url = '/api/proxy-image?url=' + encodeURIComponent(p.image_url);
+        } else {
+          url = p.image_url;
+        }
+      }
+      tooltipUsername.textContent = p.username || 'Unknown';
+      tooltipUsername.classList.toggle('empty', !p.username);
+      if (url) {
+        tooltipImg.src = url;
+        tooltipImg.style.display = 'block';
+      } else {
+        tooltipImg.style.display = 'none';
+      }
+      tooltip.classList.add('visible');
+      tooltip.style.left = (mouse.x * 0.5 + 0.5) * window.innerWidth + 16 + 'px';
+      tooltip.style.top = (-mouse.y * 0.5 + 0.5) * window.innerHeight + 16 + 'px';
+    }
+
+    let mouseDownAt = null;
+    let didDrag = false;
+    function onPointerDown(event) {
+      mouseDownAt = { x: event.clientX, y: event.clientY };
+      didDrag = false;
+    }
+    function onPointerMoveWhileDown(event) {
+      if (mouseDownAt && Math.hypot(event.clientX - mouseDownAt.x, event.clientY - mouseDownAt.y) > 10) {
+        didDrag = true; // Increased threshold to 10px to allow easier clicking
+      }
+    }
+    function onPointerUp() {
+      mouseDownAt = null;
+    }
+    function onClick(event) {
+      // Only prevent click if there was significant drag
+      if (didDrag) {
+        console.log('Click prevented - drag detected');
+        return;
+      }
+      mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+      mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+      raycaster.setFromCamera(mouse, camera);
+      
+      // Check thumbnail images first (more visible when zoomed in)
+      if (thumbnailGroup) {
+        const thumbnailHits = raycaster.intersectObjects(thumbnailGroup.children, true);
+        if (thumbnailHits.length > 0) {
+          const hit = thumbnailHits[0];
+          const index = hit.object.userData.index;
+          if (index !== undefined && pointsData[index]) {
+            const d = pointsData[index];
+            // Try to get original source URL - post_url is at top level
+            const url = d.post_url || 
+                       (d.image_url && !d.image_url.startsWith('file://') && !d.image_url.includes('/api/') ? d.image_url : null);
+            if (url) {
+              console.log('Opening URL:', url, 'from image:', d);
+              window.open(url, '_blank');
+              return;
+            } else {
+              console.log('No URL found for image. post_url:', d.post_url, 'image_url:', d.image_url);
+            }
+          }
+        }
+      }
+      
+      // Fallback to checking points
+      if (pointsMesh) {
+        const hits = raycaster.intersectObject(pointsMesh);
+        if (hits.length > 0) {
+          const d = pointsData[hits[0].index];
+          // Try to get original source URL - post_url is at top level
+          const url = d.post_url || 
+                     (d.image_url && !d.image_url.startsWith('file://') && !d.image_url.includes('/api/') ? d.image_url : null);
+          if (url) {
+            console.log('Opening URL:', url, 'from point:', d);
+            window.open(url, '_blank');
+          } else {
+            console.log('No URL found for point. post_url:', d.post_url, 'image_url:', d.image_url);
+          }
+        } else {
+          console.log('No raycast hits on points');
+        }
+      }
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      updateThumbnails();
+      updateTooltip();
+      drawWayfinder();
+      renderer.render(scene, camera);
+    }
+
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+    canvas.addEventListener('mousemove', (e) => {
+      onMouseMove(e);
+      onPointerMoveWhileDown(e);
+    });
+    canvas.addEventListener('mousedown', onPointerDown);
+    canvas.addEventListener('mouseup', onPointerUp);
+    canvas.addEventListener('mouseleave', onPointerUp);
+    canvas.addEventListener('click', onClick);
+    if (wayfinderEl) wayfinderEl.addEventListener('click', onWayfinderClick);
+
+    loadData()
+      .then(data => {
+        buildScene(data);
+        // Center camera on cluster
+        if (data.length > 0) {
+          let sumX = 0, sumY = 0, sumZ = 0;
+          data.forEach(p => {
+            sumX += p.x;
+            sumY += p.y;
+            sumZ += p.z;
+          });
+          const centerX = sumX / data.length;
+          const centerY = sumY / data.length;
+          const centerZ = sumZ / data.length;
+          controls.target.set(centerX, centerY, centerZ);
+          camera.position.set(centerX, centerY, centerZ + 38);
+        }
+        setupSearch();
+      })
+      .then(animate)
+      .catch(err => {
+        document.body.innerHTML = '<pre style="color:#ccc;padding:2rem;font-size:14px;">' + err.message + '</pre>';
+      });
+  </script>
+</body>
+</html>

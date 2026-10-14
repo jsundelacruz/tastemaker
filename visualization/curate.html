@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TasteMaker · Curate</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #0f0f0e;
+      color: #e8e6e3;
+      min-height: 100vh;
+      padding-bottom: 60px;
+    }
+    .header {
+      padding: 12px 16px;
+      border-bottom: 1px solid #2a2a26;
+      font-size: 14px;
+      color: #8a8784;
+    }
+    .header-sep { margin: 0 0.35em; color: #2a2a26; }
+    #total-count { font-weight: 600; color: #e8e6e3; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+      gap: 12px;
+      padding: 16px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    .card {
+      background: #1a1a18;
+      border: 1px solid #2a2a26;
+      border-radius: 8px;
+      overflow: hidden;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .card:hover { border-color: #3a3a36; }
+    .card.marked { border-color: #c44; }
+    .card-img-wrap {
+      position: relative;
+      aspect-ratio: 1;
+      background: #121210;
+    }
+    .card-img-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      display: block;
+    }
+    .card-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(200, 60, 60, 0.6);
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .card.marked .card-overlay { display: flex; }
+    .card-overlay .x {
+      font-size: 48px;
+      color: #fff;
+      font-weight: 200;
+      line-height: 1;
+    }
+    .card-username {
+      padding: 8px 10px;
+      font-size: 12px;
+      color: #8a8784;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .footer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 12px 16px;
+      background: #1a1a18;
+      border-top: 1px solid #2a2a26;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .footer-count { font-size: 13px; color: #8a8784; }
+    .btn-delete {
+      padding: 8px 16px;
+      background: #c44;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn-delete:hover { background: #d55; }
+    .btn-delete:disabled { opacity: 0.5; cursor: not-allowed; }
+    .loading, .error {
+      padding: 2rem 16px;
+      text-align: center;
+      color: #8a8784;
+    }
+    .error { color: #c44; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span id="total-count">—</span> images
+    <span class="header-sep">·</span>
+    click an image to mark for deletion
+  </div>
+  <div id="grid" class="grid"></div>
+  <div id="loading" class="loading">Loading…</div>
+  <div id="error" class="error" style="display:none;"></div>
+  <div id="footer" class="footer">
+    <span id="footer-count" class="footer-count">0 images selected</span>
+    <button type="button" id="btn-delete" class="btn-delete" disabled>Delete Selected</button>
+  </div>
+
+  <script type="module">
+    // Set SUPABASE_URL and SUPABASE_KEY at the top of the script (copied from .env file)
+    const SUPABASE_URL = 'https://nyvfahdkhjkkikhyykmo.supabase.co';
+    const SUPABASE_KEY = ''; // injected from .env by /curate — never hardcode
+
+    const gridEl = document.getElementById('grid');
+    const loadingEl = document.getElementById('loading');
+    const errorEl = document.getElementById('error');
+    const footerEl = document.getElementById('footer');
+    const footerCountEl = document.getElementById('footer-count');
+    const btnDelete = document.getElementById('btn-delete');
+    const totalCountEl = document.getElementById('total-count');
+
+    let rows = [];
+    const marked = new Set();
+
+    function showError(msg) {
+      loadingEl.style.display = 'none';
+      gridEl.style.display = 'none';
+      errorEl.textContent = msg;
+      errorEl.style.display = 'block';
+    }
+
+    function displayUrl(row) {
+      if (row.local_path)
+        return (typeof window !== 'undefined' && window.location.pathname.startsWith('/') ? '' : '') + '/api/local-image?path=' + encodeURIComponent(row.local_path);
+      if (row.image_url && !row.image_url.startsWith('file://')) {
+        // Use proxy for external URLs to bypass CORS issues
+        if (row.image_url.startsWith('http://') || row.image_url.startsWith('https://')) {
+          return '/api/proxy-image?url=' + encodeURIComponent(row.image_url);
+        }
+        return row.image_url;
+      }
+      return null;
+    }
+
+    function render() {
+      loadingEl.style.display = 'none';
+      errorEl.style.display = 'none';
+      gridEl.style.display = 'grid';
+      if (totalCountEl) totalCountEl.textContent = rows.length;
+      gridEl.innerHTML = '';
+      rows.forEach((row, i) => {
+        const card = document.createElement('div');
+        card.className = 'card' + (marked.has(row.id) ? ' marked' : '');
+        card.dataset.id = row.id;
+        const url = displayUrl(row);
+        card.innerHTML = `
+          <div class="card-img-wrap">
+            ${url ? `<img src="${url}" alt="" loading="lazy" onerror="this.style.background='#2a2a26';this.alt='Failed to load';" />` : '<div style="width:100%;height:100%;background:#2a2a26;display:flex;align-items:center;justify-content:center;font-size:12px;color:#6b6b6b;">No image</div>'}
+            <div class="card-overlay"><span class="x">×</span></div>
+          </div>
+          <div class="card-username">${escapeHtml(row.source_collection || '')}</div>
+        `;
+        card.addEventListener('click', () => {
+          if (marked.has(row.id)) marked.delete(row.id);
+          else marked.add(row.id);
+          card.classList.toggle('marked', marked.has(row.id));
+          updateFooter();
+        });
+        gridEl.appendChild(card);
+      });
+      updateFooter();
+    }
+
+    function updateFooter() {
+      const n = marked.size;
+      footerCountEl.textContent = n + ' image' + (n === 1 ? '' : 's') + ' selected';
+      btnDelete.disabled = n === 0;
+    }
+
+    function escapeHtml(s) {
+      const div = document.createElement('div');
+      div.textContent = s == null ? '' : s;
+      return div.innerHTML;
+    }
+
+    async function load() {
+      if (!SUPABASE_URL || !SUPABASE_KEY) {
+        showError('Set SUPABASE_URL and SUPABASE_KEY at the top of the script (copy from your .env file).');
+        return;
+      }
+      try {
+        const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
+        const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+        const { data, error } = await supabase
+          .from('images')
+          .select('id, image_url, source_collection, local_path');
+        if (error) throw error;
+        rows = data || [];
+        if (totalCountEl) totalCountEl.textContent = rows.length;
+        render();
+      } catch (e) {
+        showError('Failed to load: ' + (e.message || String(e)));
+      }
+    }
+
+    btnDelete.addEventListener('click', async () => {
+      const ids = Array.from(marked);
+      if (ids.length === 0) return;
+      btnDelete.disabled = true;
+      btnDelete.textContent = 'Deleting…';
+      try {
+        const { createClient } = await import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm');
+        const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+        const { error } = await supabase.from('images').delete().in('id', ids);
+        if (error) throw error;
+        rows = rows.filter(r => !marked.has(r.id));
+        marked.clear();
+        render();
+      } catch (e) {
+        footerCountEl.textContent = 'Error: ' + (e.message || String(e));
+      }
+      btnDelete.textContent = 'Delete Selected';
+      updateFooter();
+    });
+
+    load();
+  </script>
+</body>
+</html>

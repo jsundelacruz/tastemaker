@@ -52,6 +52,14 @@ ALTER TABLE collections DROP CONSTRAINT IF EXISTS collections_name_platform_uniq
 ALTER TABLE collections ADD CONSTRAINT collections_name_platform_uniq
 UNIQUE (collection_name, source_platform);
 
+-- User taste: one row, overall synthesis of all collections (Option B: stored, re-analyze on demand)
+CREATE TABLE IF NOT EXISTS user_taste (
+    id TEXT PRIMARY KEY DEFAULT 'default',
+    content TEXT,
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+-- App upserts the single row (id='default') when saving taste.
+
 -- Index for vector similarity search (cosine distance)
 CREATE INDEX IF NOT EXISTS images_embedding_idx ON images 
 USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
