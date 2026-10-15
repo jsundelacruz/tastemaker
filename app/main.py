@@ -9,7 +9,10 @@ import uuid
 import os
 import re
 import secrets
+import threading
+import copy
 from pathlib import Path
+from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Body, Request
@@ -490,153 +493,171 @@ async def add_screenshot(
     return {"added": rel_path, "sources": sources}
 
 
+# --- Ingestion jobs ------------------------------------------------------------
+# One job at a time, held in memory (single-process app). The pipeline runs in a
+# worker thread so scraping, CLIP and Claude calls never block the server.
+
+ANALYSIS_KEYS = ["material_vocabulary", "spatial_qualities", "recurring_forms", "color_palette", "mood_atmosphere", "installation_directions"]
+SOURCE_LIST_KEYS = {"pinterest": "pinterest", "cosmos": "cosmos", "manual": "screenshots"}
+
+_ingest_lock = threading.Lock()
+_ingest_job: Optional[dict] = None
+
+
+def _job_update(target: dict, **fields) -> None:
+    with _ingest_lock:
+        target.update(fields)
+
+
 @app.post("/api/ingest")
-async def run_ingest():
-    """Run the ingestion pipeline on all configured sources. Clears sources on success."""
+async def start_ingest():
+    """Start ingesting every listed source in the background. Poll /api/ingest/status."""
+    global _ingest_job
+    with _ingest_lock:
+        if _ingest_job and _ingest_job["status"] == "running":
+            raise HTTPException(409, "An ingestion is already running")
+        sources = _load_sources()
+        entries = (
+            [{"type": "pinterest", "ref": u, "label": u} for u in sources["pinterest"]]
+            + [{"type": "cosmos", "ref": u, "label": u} for u in sources["cosmos"]]
+            + [{"type": "manual", "ref": p, "label": Path(p).name} for p in sources["screenshots"]]
+        )
+        if not entries:
+            raise HTTPException(400, "No sources to ingest")
+        _ingest_job = {
+            "id": uuid.uuid4().hex,
+            "status": "running",
+            "error": None,
+            "total_records": 0,
+            "sources": [
+                {**e, "state": "pending", "step": None, "collection_name": None, "records_count": 0, "error": None}
+                for e in entries
+            ],
+        }
+        job = _ingest_job
+    threading.Thread(target=_run_ingest_job, args=(job,), daemon=True).start()
+    return await ingest_status()
+
+
+@app.get("/api/ingest/status")
+async def ingest_status():
+    with _ingest_lock:
+        return copy.deepcopy(_ingest_job) if _ingest_job else {"status": "idle"}
+
+
+def _run_ingest_job(job: dict) -> None:
     try:
-        result = await _run_ingest()
-        if "error" not in result and "results" in result and result.get("results"):
-            _save_sources({"pinterest": [], "cosmos": [], "screenshots": []})
-        return result
+        from database.db_client import get_supabase_client
+        client = get_supabase_client()
     except Exception as e:
-        return {"error": str(e), "results": [], "total_records": 0}
+        _job_update(job, status="error", error=f"Database: {e}")
+        return
+
+    for src in job["sources"]:
+        try:
+            _ingest_source(client, job, src)
+            _job_update(src, state="done", step=None)
+        except Exception as e:
+            _job_update(src, state="failed", step=None, error=str(e))
+
+    # Clear only sources that fully succeeded; failed ones stay listed for a retry.
+    # Re-read the file so sources added while the job ran are kept.
+    done = {(s["type"], s["ref"]) for s in job["sources"] if s["state"] == "done"}
+    sources = _load_sources()
+    for source_type, key in SOURCE_LIST_KEYS.items():
+        sources[key] = [ref for ref in sources[key] if (source_type, ref) not in done]
+    _save_sources(sources)
+    _job_update(job, status="done")
 
 
-async def _run_ingest():
-    import sys
-    sys.path.insert(0, str(ROOT))
+def _fetch_source_records(src: dict) -> list[dict]:
+    if src["type"] == "pinterest":
+        from ingestion.pinterest_scraper import scrape_pinterest_board
+        return scrape_pinterest_board(src["ref"], max_pins=10)
+    if src["type"] == "cosmos":
+        from ingestion.cosmos_scraper import scrape_cosmos_cluster
+        return scrape_cosmos_cluster(src["ref"], max_elements=20)
+    path = ROOT / src["ref"]
+    if not path.exists():
+        raise FileNotFoundError(f"Screenshot file missing: {src['ref']}")
+    name = path.stem or "screenshot"
+    return [{
+        "source_platform": "manual",
+        "source_collection": name,
+        "image_url": str(path),  # local path: encode_image reads it from disk
+        "local_path": src["ref"],
+        "original_title": path.stem,
+        "original_description": None,
+        "original_metadata": {},
+    }]
 
-    from ingestion.pinterest_scraper import scrape_pinterest_board
-    from ingestion.cosmos_scraper import scrape_cosmos_cluster
+
+def _db_record(r: dict) -> dict:
+    img_url = r.get("image_url") or ""
+    if r.get("local_path") and not img_url.startswith("http"):
+        img_url = f"file://{ROOT / r['local_path']}"
+    return {
+        "source_platform": r["source_platform"],
+        "source_collection": r.get("source_collection"),
+        "image_url": img_url or "file://local",
+        "local_path": r.get("local_path"),
+        "original_title": r.get("original_title"),
+        "original_description": r.get("original_description"),
+        "original_metadata": r.get("original_metadata", {}),
+        "embedding": r.get("embedding"),
+    }
+
+
+def _ingest_source(client, job: dict, src: dict) -> None:
     from ingestion.generate_embeddings import add_embeddings_to_records
-    from database.db_client import get_supabase_client, insert_images_batch, upsert_collection, delete_images_for_collection
+    from database.db_client import insert_images_batch, upsert_collection, get_image_ids_for_collection, delete_images_by_id
     from agent.reasoning import analyze_collection, analyze_moodboard_image
 
-    sources = _load_sources()
-    groups = []  # (source_type, source_label, source_url, records)
+    _job_update(src, state="running", step="Fetching")
+    records = _fetch_source_records(src)
+    if not records:
+        raise ValueError("No images found")
 
-    # Pinterest: one group per board
-    for url in sources["pinterest"]:
-        try:
-            board_records = scrape_pinterest_board(url, max_pins=10)
-            if board_records:
-                name = board_records[0].get("source_collection", "pinterest")
-                groups.append(("pinterest", name, url, board_records))
-        except Exception as e:
-            return {"error": f"Pinterest {url}: {e}", "results": [], "total_records": 0}
+    _job_update(src, step=f"Embedding {len(records)} image{'s' if len(records) != 1 else ''}")
+    add_embeddings_to_records(records)
+    records = [r for r in records if r.get("embedding")]
+    if not records:
+        raise ValueError("No images could be loaded for embedding")
 
-    # Cosmos: one group per cluster
-    for url in sources["cosmos"]:
-        try:
-            cosmos_records = scrape_cosmos_cluster(url, max_elements=20)
-            if cosmos_records:
-                name = cosmos_records[0].get("source_collection", "cosmos")
-                groups.append(("cosmos", name, url, cosmos_records))
-        except Exception as e:
-            return {"error": f"Cosmos {url}: {e}", "results": [], "total_records": 0}
+    collection_name = records[0].get("source_collection") or src["label"]
+    platform = records[0]["source_platform"]
+    _job_update(src, step="Saving", collection_name=collection_name)
+    # Insert-then-swap: add the fresh images first, then remove the previous set,
+    # so a failure part-way never leaves the collection empty.
+    old_ids = get_image_ids_for_collection(client, collection_name, platform)
+    inserted = insert_images_batch(client, [_db_record(r) for r in records])
+    delete_images_by_id(client, old_ids)
+    with _ingest_lock:
+        src["records_count"] = len(inserted)
+        job["total_records"] += len(inserted)
 
-    # Screenshots: one group per screenshot (each gets its own collection)
-    for rel_path in sources["screenshots"]:
-        path = ROOT / rel_path
-        if path.exists():
-            name = path.stem or "screenshot"
-            groups.append(("manual", name, rel_path, [{
-                "source_platform": "manual",
-                "source_collection": name,
-                "image_url": "",
-                "local_path": rel_path,
-                "original_title": path.stem,
-                "original_description": None,
-                "original_metadata": {},
-            }]))
-
-    if not groups:
-        return {"message": "No sources to ingest", "results": [], "total_records": 0}
-
-    from ingestion.generate_embeddings import add_embeddings_to_records
-
-    client = get_supabase_client()
-    analysis_keys = ["material_vocabulary", "spatial_qualities", "recurring_forms", "color_palette", "mood_atmosphere", "installation_directions"]
-    results = []
-    total_records = 0
-
-    for source_type, source_label, source_url, records in groups:
-        for r in records:
-            if r.get("local_path") and not r.get("image_url"):
-                r["image_url"] = str(ROOT / r["local_path"])
-        add_embeddings_to_records(records)
-        records = [r for r in records if r.get("embedding")]
-        if not records:
-            results.append({
-                "source_type": source_type,
-                "source_label": source_label,
-                "source_url": source_url,
-                "collection_name": source_label,
-                "records_count": 0,
-                "analysis": {"error": "No embeddings generated"},
-            })
-            continue
-
-        collection_name = records[0].get("source_collection", source_label)
-        source_platform = records[0].get("source_platform", "pinterest")
-        delete_images_for_collection(client, collection_name, source_platform)
-        db_records = []
-        for r in records:
-            img_url = r.get("image_url") or ""
-            if r.get("local_path") and not img_url.startswith("http"):
-                img_url = f"file://{ROOT / r['local_path']}"
-            db_records.append({
-                "source_platform": r["source_platform"],
-                "source_collection": r.get("source_collection"),
-                "image_url": img_url or "file://local",
-                "local_path": r.get("local_path"),
-                "original_title": r.get("original_title"),
-                "original_description": r.get("original_description"),
-                "original_metadata": r.get("original_metadata", {}),
-                "embedding": r.get("embedding"),
-            })
-        inserted = insert_images_batch(client, db_records)
-        total_records += len(inserted)
-
-        try:
-            screenshot_path = None
-            if source_platform == "manual":
-                for r in records:
-                    if r.get("local_path"):
-                        p = ROOT / r["local_path"]
-                        if p.exists():
-                            screenshot_path = p
-                            break
-            if screenshot_path and source_platform == "manual":
-                analysis = analyze_moodboard_image(screenshot_path, collection_name=collection_name)
-            else:
-                sample = [r.get("original_title") or r.get("original_description") or "" for r in records[:10]]
-                analysis = analyze_collection(
-                    collection_name=collection_name,
-                    source_platform=source_platform,
-                    total_images=len(records),
-                    sample_descriptions=sample,
-                )
-            upsert_collection(
-                client,
-                collection_name=collection_name,
-                source_platform=source_platform,
-                total_images=len(records),
-                **{k: v for k, v in analysis.items() if k in analysis_keys},
-            )
-        except Exception as e:
-            analysis = {"error": str(e)}
-
-        results.append({
-            "source_type": source_type,
-            "source_label": source_label,
-            "source_url": source_url,
-            "collection_name": collection_name,
-            "records_count": len(inserted),
-            "analysis": analysis,
-        })
-
-    return {"results": results, "total_records": total_records}
+    _job_update(src, step="Analyzing")
+    if platform == "manual":
+        analysis = analyze_moodboard_image(ROOT / records[0]["local_path"], collection_name=collection_name)
+    else:
+        sample = [r.get("original_title") or r.get("original_description") or "" for r in records[:10]]
+        analysis = analyze_collection(
+            collection_name=collection_name,
+            source_platform=platform,
+            total_images=len(records),
+            sample_descriptions=sample,
+        )
+    fields = {k: v for k, v in analysis.items() if k in ANALYSIS_KEYS}
+    if not any(fields.values()):
+        # Don't overwrite a previous good analysis with empty fields; keep the source for a retry
+        raise ValueError("Images saved, but Claude's analysis came back unparseable")
+    upsert_collection(
+        client,
+        collection_name=collection_name,
+        source_platform=platform,
+        total_images=len(records),
+        **fields,
+    )
 
 
 # Mount static files

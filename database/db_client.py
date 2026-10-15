@@ -57,9 +57,24 @@ def insert_image(
     return result.data[0]
 
 
-def delete_images_for_collection(client: Client, collection_name: str, source_platform: str) -> None:
-    """Remove all images for a collection (so we can replace with fresh ingest, avoiding duplicates)."""
-    client.table("images").delete().eq("source_collection", collection_name).eq("source_platform", source_platform).execute()
+def get_image_ids_for_collection(client: Client, collection_name: str, source_platform: str) -> list[str]:
+    """Ids of a collection's current images (so a re-ingest can swap them out after inserting)."""
+    ids: list[str] = []
+    start, page_size = 0, 1000
+    while True:
+        result = (
+            client.table("images")
+            .select("id")
+            .eq("source_collection", collection_name)
+            .eq("source_platform", source_platform)
+            .range(start, start + page_size - 1)
+            .execute()
+        )
+        batch = result.data or []
+        ids.extend(str(r["id"]) for r in batch)
+        if len(batch) < page_size:
+            return ids
+        start += page_size
 
 
 def insert_images_batch(client: Client, records: list[dict]) -> list[dict]:
@@ -154,9 +169,10 @@ def list_images(client: Client, page_size: int = 1000) -> list[dict]:
         start += page_size
 
 
-def delete_images_by_id(client: Client, image_ids: list[str]) -> None:
-    """Delete images by id."""
-    client.table("images").delete().in_("id", image_ids).execute()
+def delete_images_by_id(client: Client, image_ids: list[str], chunk_size: int = 100) -> None:
+    """Delete images by id, in chunks to keep request URLs short."""
+    for i in range(0, len(image_ids), chunk_size):
+        client.table("images").delete().in_("id", image_ids[i:i + chunk_size]).execute()
 
 
 def get_images_metadata(client: Client, image_ids: list[str]) -> dict[str, dict]:

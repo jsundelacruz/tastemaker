@@ -188,6 +188,16 @@
     .output .result-mood { color: var(--text); line-height: 1.5; }
     .output .result-directions { list-style: none; padding-left: 0; }
     .output .result-directions li { padding: 0.25rem 0; padding-left: 0.75rem; border-left: 2px solid var(--accent-dim); margin-bottom: 0.35rem; }
+    .output .job-list { list-style: none; padding: 0; margin: 0; }
+    .output .job-item { display: flex; gap: 0.6rem; align-items: baseline; padding: 0.4rem 0; border-bottom: 1px solid var(--border); }
+    .output .job-item:last-child { border-bottom: 0; }
+    .output .job-state { flex: 0 0 4.5rem; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+    .output .job-item.running .job-state { color: var(--accent); }
+    .output .job-item.done .job-state { color: #7fae7a; }
+    .output .job-item.failed .job-state { color: #c45c5c; }
+    .output .job-main { min-width: 0; overflow-wrap: anywhere; }
+    .output .job-detail { display: block; color: var(--muted); font-size: 0.8rem; }
+    .output .job-item.failed .job-detail { color: #c45c5c; }
     .output.success { border-color: var(--accent-dim); }
     .output.error { border-color: #c45c5c; }
     .output:empty { display: none; }
@@ -242,7 +252,7 @@
 
     <div class="card">
       <h2>Run ingestion</h2>
-      <p class="ingest-note">Processes <strong>every source listed above</strong>. Uses tokens and credits (Apify for Pinterest, Claude for analysis). Remove sources after ingesting to avoid re-running.</p>
+      <p class="ingest-note">Processes <strong>every source listed above</strong>. Uses tokens and credits (Apify for Pinterest, Claude for analysis). Sources that ingest successfully are cleared from the list; failed ones stay so you can retry.</p>
       <button class="ingest-btn" id="ingestBtn">Run ingestion</button>
       <p class="ingest-archive" id="ingestArchive"></p>
       <div class="output" id="output"></div>
@@ -425,94 +435,85 @@
       return div.innerHTML;
     }
 
-    function formatIngestResult(data) {
-      if (data.error) {
-        return '<pre>' + escapeHtml(data.error) + '</pre>';
-      }
+    const SOURCE_TYPE_LABELS = { pinterest: 'Pinterest', cosmos: 'Cosmos', manual: 'Screenshot' };
+    const STATE_LABELS = { pending: 'Queued', running: 'Working', done: 'Done', failed: 'Failed' };
 
-      const results = data.results;
-      const totalRecords = data.total_records ?? 0;
+    function renderJob(job) {
+      const sources = job.sources || [];
+      const running = job.status === 'running';
+      const finished = sources.filter(s => s.state === 'done' || s.state === 'failed').length;
+      const failed = sources.filter(s => s.state === 'failed').length;
+      const total = job.total_records || 0;
+      const images = total + ' image' + (total !== 1 ? 's' : '');
+      let header;
+      if (job.status === 'error') header = 'Ingestion could not start: ' + escapeHtml(job.error || 'unknown error');
+      else if (running) header = 'Ingesting… ' + finished + ' of ' + sources.length + ' sources · ' + images + ' saved';
+      else header = 'Ingestion finished · ' + (sources.length - failed) + ' of ' + sources.length + ' sources succeeded · ' + images + ' saved';
 
-      if (Array.isArray(results) && results.length > 0) {
-        const srcLabel = (t) => ({ pinterest: 'Pinterest', cosmos: 'Cosmos', manual: 'Screenshot' })[t] || t;
-        let html = '<div class="result-header">Ingestion complete · ' + results.length + ' source' + (results.length !== 1 ? 's' : '') + ', ' + totalRecords + ' image' + (totalRecords !== 1 ? 's' : '') + ' saved.</div>';
-        html += '<div class="result-section"><div class="result-label">What was ingested</div><ul class="result-directions" style="border-left:0;padding-left:0;">';
-        results.forEach(r => {
-          const typeLabel = srcLabel(r.source_type);
-          const name = escapeHtml(r.source_label || r.collection_name);
-          const n = r.records_count ?? 0;
-          html += '<li style="margin-bottom:0.5rem;">' + typeLabel + ': <strong>' + name + '</strong> (' + n + ' image' + (n !== 1 ? 's' : '') + ')</li>';
-        });
-        html += '</ul></div>';
-        html += '<div class="result-section"><a href="/analyses" style="color:var(--accent);">View all analyses →</a></div>';
-        return html;
-      }
+      let html = '<div class="result-header">' + header + '</div><ul class="job-list">';
+      sources.forEach(s => {
+        let detail = '';
+        if (s.state === 'running') detail = (s.step || 'Working') + '…';
+        else if (s.state === 'done') detail = s.records_count + ' image' + (s.records_count !== 1 ? 's' : '') + ' saved and analyzed';
+        else if (s.state === 'failed') detail = s.error || 'Failed';
+        const name = s.collection_name || s.label;
+        html += '<li class="job-item ' + escapeHtml(s.state) + '"><span class="job-state">' + (STATE_LABELS[s.state] || escapeHtml(s.state)) + '</span>' +
+          '<span class="job-main">' + escapeHtml(SOURCE_TYPE_LABELS[s.type] || s.type) + ': <strong>' + escapeHtml(name) + '</strong>' +
+          (detail ? '<span class="job-detail">' + escapeHtml(detail) + '</span>' : '') + '</span></li>';
+      });
+      html += '</ul>';
+      if (!running && failed) html += '<p class="result-mood" style="color:var(--muted);margin-top:0.75rem;">Failed sources are still listed above. Run ingestion again to retry them.</p>';
+      if (!running && failed < sources.length) html += '<div class="result-section" style="margin-top:0.75rem;"><a href="/analyses" style="color:var(--accent);">View all analyses →</a></div>';
+      return html;
+    }
 
-      const n = data.records ?? 0;
-      const analysis = data.analysis || {};
-      if (!analysis.material_vocabulary && !analysis.mood_atmosphere && analysis.raw_response) {
-        return '<pre>' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>';
+    let pollTimer = null;
+    function showJob(job) {
+      const out = document.getElementById('output');
+      const btn = document.getElementById('ingestBtn');
+      out.innerHTML = renderJob(job);
+      const running = job.status === 'running';
+      const anyFailed = (job.sources || []).some(s => s.state === 'failed');
+      out.className = 'output' + (running ? '' : (job.status === 'error' || anyFailed ? ' error' : ' success'));
+      if (running) {
+        btn.disabled = true;
+        btn.textContent = 'Ingestion running…';
+        clearTimeout(pollTimer);
+        pollTimer = setTimeout(pollJob, 1500);
+      } else {
+        loadSources();  // succeeded sources were cleared server-side; also resets the button
+        loadArchiveLink();
       }
-      const arr = (v) => Array.isArray(v) ? v : [];
-      const material = arr(analysis.material_vocabulary);
-      const spatial = arr(analysis.spatial_qualities);
-      const forms = arr(analysis.recurring_forms);
-      const palette = arr(analysis.color_palette);
-      const directions = arr(analysis.installation_directions);
-      const mood = analysis.mood_atmosphere || '';
+    }
 
-      let html = '<div class="result-header">Ingestion complete · ' + n + ' image' + (n !== 1 ? 's' : '') + ' saved.</div>';
-      if (material.length) {
-        html += '<div class="result-section"><div class="result-label">Material vocabulary</div><div class="result-list">' + material.map(m => escapeHtml(m)).join(', ') + '</div></div>';
+    async function pollJob() {
+      try {
+        const res = await fetch('/api/ingest/status');
+        const job = await res.json();
+        if (job.status !== 'idle') showJob(job);
+      } catch (e) {
+        pollTimer = setTimeout(pollJob, 3000);  // server restarting; keep trying
       }
-      if (spatial.length) {
-        html += '<div class="result-section"><div class="result-label">Spatial qualities</div><div class="result-list">' + spatial.map(s => escapeHtml(s)).join(', ') + '</div></div>';
-      }
-      if (forms.length) {
-        html += '<div class="result-section"><div class="result-label">Recurring forms</div><div class="result-list">' + forms.map(f => escapeHtml(f)).join(', ') + '</div></div>';
-      }
-      if (palette.length) {
-        html += '<div class="result-section"><div class="result-label">Color palette</div><div class="result-list">' + palette.map(p => escapeHtml(p)).join(', ') + '</div></div>';
-      }
-      if (mood) {
-        html += '<div class="result-section"><div class="result-label">Mood & atmosphere</div><p class="result-mood">' + escapeHtml(mood) + '</p></div>';
-      }
-      if (directions.length) {
-        html += '<div class="result-section"><div class="result-label">Installation directions</div><ul class="result-directions">';
-        directions.forEach(d => { html += '<li>' + escapeHtml(String(d)) + '</li>'; });
-        html += '</ul></div>';
-      }
-      if (html === '<div class="result-header">Ingestion complete · ' + n + ' image' + (n !== 1 ? 's' : '') + ' saved.</div>') {
-        return html + '<p class="result-mood" style="color:var(--muted)">No analysis yet. <a href="/analyses">View analyses</a> after ingestion.</p>';
-      }
-      return html + '<div class="result-section"><a href="/analyses" style="color:var(--accent);">View all analyses →</a></div>';
     }
 
     document.getElementById('ingestBtn').onclick = async () => {
       const btn = document.getElementById('ingestBtn');
       const out = document.getElementById('output');
       btn.disabled = true;
-      out.innerHTML = 'Running…';
-      out.className = 'output';
       try {
         const res = await fetch('/api/ingest', { method: 'POST' });
-        const text = await res.text();
-        let data;
-        try {
-          data = JSON.parse(text);
-        } catch {
-          throw new Error(res.ok ? 'Invalid response' : (text || res.statusText));
-        }
-        if (data.error) throw new Error(data.error);
-        out.innerHTML = formatIngestResult(data);
-        out.className = 'output success';
-        loadArchiveLink();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.detail || res.statusText);
+        showJob(data);
       } catch (e) {
         out.innerHTML = '<pre>' + escapeHtml(e.message || String(e)) + '</pre>';
         out.className = 'output error';
+        loadSources();
       }
-      btn.disabled = false;
     };
+
+    // Resume showing progress if a job is already running (e.g. after a page reload)
+    fetch('/api/ingest/status').then(r => r.json()).then(job => { if (job.status === 'running') showJob(job); }).catch(() => {});
 
     loadSources();
     loadArchiveLink();
