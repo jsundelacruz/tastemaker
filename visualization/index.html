@@ -321,16 +321,17 @@
     const THEME_DEPTH = 10;    // front theme → smallest theme
     const MEMBER_DEPTH = 4;    // a theme's core → its loosely-related images
     const MAX_DEPTH = THEME_DEPTH + MEMBER_DEPTH;
-    const DEPTH_JITTER = 0.5;
+    const DEPTH_JITTER = 1.6;  // spreads a theme's tiles in depth so neighbours get different opacities
     // Tiles are drawn larger in front and smaller further back (on top of perspective).
     const SIZE_FRONT = 1.4, SIZE_BACK = 0.65;
     // Camera: perspective; scrolling flies along z, through the layers.
     const FOV = 50;
     const CAM_Z_MIN = -MAX_DEPTH + 1, CAM_Z_MAX = 48, CAM_Z_START = 26;
-    // Opacity by depth: the nearest layer on screen is fully opaque, deeper layers fade to MIN_OPACITY.
+    // Opacity by depth: only the tiles nearest you are fully opaque; each step back fades a little
+    // (≈90% half a unit behind, ≈75% at 1.5 units, ≈35% at 6), down to MIN_OPACITY.
     const MIN_OPACITY = 0.15;
-    const FOCUS_BAND = 2;      // this far behind the nearest layer is still fully opaque
-    const FADE_SPAN = 8;       // then fades to MIN_OPACITY over this distance
+    const FOCUS_BAND = 0.15;   // tiles this close to the nearest one are also 100%
+    const FADE_FALLOFF = 3.8;  // larger = gentler fade with depth
     const PASS_FADE = 1.5;     // tiles closer than this fade out as you fly past them
     const FADE_EASE = 0.12;    // per-frame easing toward the target opacity
     let isDragging = false;
@@ -852,7 +853,8 @@
       for (const tile of tiles) {
         const dist = camera.position.z - tile.position.z;
         const passing = smoothstep(PASS_FADE * 0.3, PASS_FADE, dist);  // 0 once behind/at the camera
-        const depthFade = 1 - smoothstep(focusDist + FOCUS_BAND, focusDist + FOCUS_BAND + FADE_SPAN, dist);
+        const behind = Math.max(0, dist - focusDist - FOCUS_BAND);  // depth behind the nearest tile
+        const depthFade = Math.exp(-behind / FADE_FALLOFF);
         let target = passing * (MIN_OPACITY + (1 - MIN_OPACITY) * depthFade);
         if (tile === hovered) target = 1;
         const ud = tile.userData;
