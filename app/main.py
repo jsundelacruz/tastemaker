@@ -9,6 +9,7 @@ import uuid
 import os
 import re
 import secrets
+import hashlib
 import threading
 import copy
 from pathlib import Path
@@ -401,6 +402,52 @@ async def proxy_image(url: str):
     if len(resp.content) > PROXY_MAX_BYTES:
         raise HTTPException(502, "Image too large")
     return Response(content=resp.content, media_type=content_type)
+
+
+THUMBS_DIR = ROOT / "data" / "thumbs"
+THUMB_SIZES = (128, 256, 512)
+
+
+def _make_thumb(src: str, width: int, dest: Path) -> None:
+    """Fetch (allowlisted URL or data/ file), shrink to width, save as JPEG."""
+    import io
+    import httpx
+    from PIL import Image, ImageOps
+    if src.startswith("data/"):
+        if ".." in src or not (ROOT / src).is_file():
+            raise HTTPException(404, "Not found")
+        raw = (ROOT / src).read_bytes()
+    elif _proxy_host_allowed(src):
+        resp = httpx.get(src, timeout=20.0, follow_redirects=False)
+        resp.raise_for_status()
+        if len(resp.content) > PROXY_MAX_BYTES:
+            raise HTTPException(502, "Image too large")
+        raw = resp.content
+    else:
+        raise HTTPException(400, "Source not allowed")
+    with Image.open(io.BytesIO(raw)) as im:  # Pillow decodes AVIF (Cosmos CDN) too
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((width, width * 4))
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(f".{uuid.uuid4().hex}.tmp")
+        im.save(tmp, "JPEG", quality=82, optimize=True)
+        tmp.replace(dest)  # atomic, so a half-written file is never served
+
+
+@app.get("/api/thumb")
+async def thumbnail(src: str, w: int = 256):
+    """Small cached JPEG of an archive image (for the constellation's hundreds of tiles)."""
+    from fastapi.concurrency import run_in_threadpool
+    width = min(THUMB_SIZES, key=lambda s: abs(s - w))
+    dest = THUMBS_DIR / str(width) / f"{hashlib.sha1(src.encode()).hexdigest()}.jpg"
+    if not dest.exists():
+        try:
+            await run_in_threadpool(_make_thumb, src, width, dest)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(502, f"Thumbnail failed: {e}")
+    return FileResponse(dest, media_type="image/jpeg", headers={"Cache-Control": "public, max-age=604800"})
 
 
 @app.get("/api/sources")

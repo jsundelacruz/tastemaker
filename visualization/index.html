@@ -37,6 +37,16 @@
       transition: background 0.15s;
     }
     #back:hover { background: rgba(40, 36, 32, 0.95); }
+    #tile-status {
+      position: fixed;
+      top: 18px;
+      left: 190px;
+      z-index: 30;
+      color: #8a8784;
+      font-size: 12px;
+      pointer-events: none;
+    }
+    #tile-status:empty { display: none; }
     #legend {
       position: fixed;
       bottom: 12px;
@@ -241,6 +251,7 @@
   <div id="crosshair-bg"></div>
   <canvas id="canvas"></canvas>
   <a id="back" href="/">← Back to TasteMaker</a>
+  <div id="tile-status" aria-live="polite"></div>
   <div id="cluster-labels"></div>
   <div id="tooltip"></div>
   <div id="panel">
@@ -280,6 +291,7 @@
 
     const canvas = document.getElementById('canvas');
     const tooltip = document.getElementById('tooltip');
+    const tileStatusEl = document.getElementById('tile-status');
     const panel = document.getElementById('panel');
     const panelTitle = document.getElementById('panel-title');
     const panelBody = document.getElementById('panel-body');
@@ -366,6 +378,57 @@
         loader.setCrossOrigin('anonymous');
         loader.load(url, resolve, undefined, reject);
       });
+    }
+
+    // Tiles use small server-side thumbnails; the side panel keeps the full image.
+    function getThumbUrl(datum) {
+      const url = getImageUrl(datum);
+      if (!url) return '';
+      if (url.startsWith('/api/local-image')) {
+        const path = new URLSearchParams(url.split('?')[1]).get('path');
+        return '/api/thumb?w=256&src=' + encodeURIComponent(path);
+      }
+      return '/api/thumb?w=256&src=' + encodeURIComponent(url);
+    }
+
+    // Load tiles a few at a time, nearest the centre first, retrying failures,
+    // instead of firing hundreds of full-size requests at once.
+    const TILE_CONCURRENCY = 6;
+    const TILE_RETRIES = 2;
+    function loadTiles(jobs) {
+      const queue = jobs.slice().sort((a, b) => a.dist - b.dist);
+      let active = 0, loaded = 0, failed = 0;
+      const total = queue.length;
+      function report() {
+        if (tileStatusEl) {
+          tileStatusEl.textContent = loaded + failed < total
+            ? `Loading images ${loaded} / ${total}`
+            : (failed ? `${failed} image${failed === 1 ? '' : 's'} could not load` : '');
+        }
+      }
+      function next() {
+        while (active < TILE_CONCURRENCY && queue.length) {
+          const job = queue.shift();
+          active++;
+          loadTexture(job.url).then(tex => {
+            tex.minFilter = THREE.LinearFilter;
+            tex.magFilter = THREE.LinearFilter;
+            job.plane.material.map.dispose();
+            job.plane.material.map = tex;
+            job.plane.material.needsUpdate = true;
+            loaded++;
+          }).catch(() => {
+            if (job.tries < TILE_RETRIES) {
+              job.tries++;
+              setTimeout(() => { queue.push(job); next(); }, 800 * job.tries);
+            } else {
+              failed++;
+            }
+          }).finally(() => { active--; report(); next(); });
+        }
+      }
+      report();
+      next();
     }
 
     const MIN_SPRITE_DIST = 0.46;
@@ -478,6 +541,7 @@
         side: THREE.DoubleSide,
         depthWrite: false,
       });
+      const tileJobs = [];
       pointsData.forEach((datum, i) => {
         const geom = new THREE.PlaneGeometry(SPRITE_SIZE, SPRITE_SIZE);
         const mat = new THREE.MeshBasicMaterial({
@@ -497,16 +561,10 @@
         borderPlane.userData = { index: i, isBorder: true };
         spriteGroup.add(borderPlane);
         spriteGroup.add(plane);
-        const url = getImageUrl(datum);
-        if (url) {
-          loadTexture(url).then(tex => {
-            tex.minFilter = THREE.LinearFilter;
-            tex.magFilter = THREE.LinearFilter;
-            plane.material.map = tex;
-            plane.material.needsUpdate = true;
-          }).catch(() => {});
-        }
+        const url = getThumbUrl(datum);
+        if (url) tileJobs.push({ url, plane, tries: 0, dist: Math.hypot(datum.x, datum.y) });
       });
+      loadTiles(tileJobs);
 
       updateClusterLabels();
       drawWayfinder();
