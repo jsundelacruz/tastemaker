@@ -89,8 +89,8 @@ This will:
 tastemaker/
 ├── ingestion/
 │   ├── pinterest_scraper.py   # Apify Pinterest integration
-│   ├── cosmos_scraper.py     # (placeholder)
-│   ├── instagram_parser.py   # (placeholder)
+│   ├── cosmos_scraper.py     # Cosmos clusters (broken: Cosmos now renders client-side)
+│   ├── ingest_instagram.py   # Instagram: Apify output or saved-posts export → archive
 │   ├── figma_parser.py       # (placeholder)
 │   ├── generate_embeddings.py
 │   └── orchestrator.py       # (placeholder)
@@ -113,3 +113,14 @@ tastemaker/
 | Apify | `APIFY_TOKEN` | Pinterest scraping |
 | Supabase | `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | Storage + pgvector |
 | Anthropic | `ANTHROPIC_API_KEY` | Claude pattern analysis |
+| — | `TASTEMAKER_MODEL` | Optional: Claude model override (default `claude-sonnet-4-5-20250929`) |
+| — | `TASTEMAKER_PASSWORD` | Required when deployed; unset = local-only access |
+
+## Instagram
+
+```bash
+python -m ingestion.ingest_instagram path/to/posts.json --dry-run   # preview
+python -m ingestion.ingest_instagram path/to/posts.json             # ingest new posts
+```
+
+Accepts Apify Instagram scraper output or an Instagram saved-posts export (format is detected). Posts already in the archive are skipped.

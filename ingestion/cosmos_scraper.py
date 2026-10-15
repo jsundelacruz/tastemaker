@@ -109,6 +109,13 @@ def scrape_cosmos_cluster(
         ]
 
     urls = _extract_images_from_html(html)[:max_elements]
+    if not urls:
+        # As of Oct 2026 cluster pages ship no image data in their HTML (it loads client-side
+        # from api.cosmos.so/graphql), so this scraper finds nothing until it's reworked.
+        raise ValueError(
+            "Cosmos page contained no images. Cosmos now loads clusters with JavaScript, "
+            "so the Cosmos scraper needs updating before this source can be ingested."
+        )
     return [
         {
             "source_platform": "cosmos",

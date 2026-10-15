@@ -11,6 +11,14 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# One place to change the Claude model; override per environment with TASTEMAKER_MODEL.
+MODEL = os.getenv("TASTEMAKER_MODEL", "claude-sonnet-4-5-20250929")
+
+
+def _response_text(response) -> str:
+    """Concatenate the text blocks of a response (models that think put a thinking block first)."""
+    return "".join(block.text for block in response.content if block.type == "text")
+
 
 def analyze_collection(
     collection_name: str,
@@ -44,12 +52,12 @@ def analyze_collection(
 
     client = anthropic.Anthropic(api_key=key)
     response = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model=MODEL,
         max_tokens=1024,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    text = response.content[0].text
+    text = _response_text(response)
     # Try to parse JSON from response
     try:
         # Handle markdown code blocks
@@ -99,7 +107,7 @@ def analyze_moodboard_image(
 
     client = anthropic.Anthropic(api_key=key)
     response = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model=MODEL,
         max_tokens=2048,
         messages=[
             {
@@ -122,7 +130,7 @@ def analyze_moodboard_image(
         ],
     )
 
-    text = response.content[0].text
+    text = _response_text(response)
     to_try = [text]
     if "```json" in text:
         to_try.append(text.split("```json")[1].split("```")[0].strip())
@@ -177,8 +185,8 @@ def analyze_overall_taste(collections: list[dict], api_key: Optional[str] = None
     prompt = OVERALL_TASTE_PROMPT + "\n\n" + "\n".join(blocks)
     client = anthropic.Anthropic(api_key=key)
     response = client.messages.create(
-        model="claude-sonnet-4-5-20250929",
+        model=MODEL,
         max_tokens=1024,
         messages=[{"role": "user", "content": prompt}],
     )
-    return (response.content[0].text or "").strip()
+    return _response_text(response).strip()
