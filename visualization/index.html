@@ -314,8 +314,19 @@
     let clustersData = {};
     let spriteGroup = null;
     let camera, renderer;
-    let zoomLevel = 1;
-    let baseOrthoSize = 6;
+    let tiles = [];  // image meshes; each has its border as a child
+
+    // Depth: big clusters sit at the front (z = 0), small themes recede, unclustered at the back.
+    const MAX_DEPTH = 14;
+    const DEPTH_JITTER = 0.6;
+    // Camera: perspective, zoom = flying along z.
+    const FOV = 50;
+    const CAM_Z_MIN = 2.5, CAM_Z_MAX = 48, CAM_Z_START = 26;
+    // Focus fade: tiles go from MIN_OPACITY to 1 as they get closer to the camera and to screen centre.
+    const MIN_OPACITY = 0.15;
+    const FADE_NEAR = 14, FADE_FAR = 46;          // camera distance: full → faint
+    const FADE_CENTER = 0.3, FADE_EDGE = 1.15;    // screen radius (0 = centre, 1 ≈ edge): full → faint
+    const FADE_EASE = 0.12;                       // per-frame easing toward the target opacity
     let isDragging = false;
     let dragStart = { x: 0, y: 0 };
     let camStart = { x: 0, y: 0 };
@@ -493,6 +504,21 @@
       return { points: scaledPoints, clusters: scaledClusters };
     }
 
+    function assignDepth(points) {
+      const sizes = {};
+      points.forEach(p => { if (p.cluster !== -1 && p.cluster !== '-1') sizes[p.cluster] = (sizes[p.cluster] || 0) + 1; });
+      const maxLog = Math.log(Math.max(2, ...Object.values(sizes)));
+      points.forEach(p => {
+        const size = sizes[p.cluster] || 1;  // unclustered counts as a theme of one: furthest back
+        const back = 1 - Math.log(size) / maxLog;  // 0 for the biggest cluster, 1 for singletons
+        // Deterministic jitter (stable between visits) so a cluster reads as a volume, not a sheet
+        const h = Math.sin((p.x * 12.9898 + p.y * 78.233) * 43758.5453);
+        const jitter = (h - Math.floor(h) - 0.5) * DEPTH_JITTER;
+        p.z = -back * MAX_DEPTH + jitter;
+        p.clusterSize = size;
+      });
+    }
+
     async function loadData() {
       const res = await fetch('/constellation_data.json');
       if (!res.ok) throw new Error('Constellation data not found. Run: python -m visualization.constellation');
@@ -509,21 +535,19 @@
         throw new Error('Invalid constellation_data.json format (expected { points: [...] } or array)');
       }
       const { points: scaledPoints, clusters: scaledClusters } = normalizeLayout(points, clusters);
+      assignDepth(scaledPoints);
       pointsData = scaledPoints;
       clustersData = scaledClusters;
       return { points: pointsData, clusters: clustersData };
     }
 
     function buildScene() {
-      const aspect = window.innerWidth / window.innerHeight;
-      const orthoSize = baseOrthoSize / zoomLevel;
-      camera = new THREE.OrthographicCamera(
-        -orthoSize * aspect, orthoSize * aspect,
-        orthoSize, -orthoSize,
-        0.1, 1000
-      );
-      camera.position.set(0, 0, 50);
-      camera.lookAt(0, 0, 0);
+      camera = new THREE.PerspectiveCamera(FOV, window.innerWidth / window.innerHeight, 0.1, 500);
+      // Optional starting view from the URL, e.g. /constellation?x=3&y=-2&z=8
+      const q = new URLSearchParams(location.search);
+      const num = (k, d) => (q.has(k) && isFinite(+q.get(k)) ? +q.get(k) : d);
+      camera.position.set(num('x', 0), num('y', 0), Math.max(CAM_Z_MIN, Math.min(CAM_Z_MAX, num('z', CAM_Z_START))));
+      camera.lookAt(0, 0, -1e6);  // always look straight down -z; panning moves x/y only
 
       renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
       renderer.setClearColor(0x000000, 0);
@@ -533,34 +557,32 @@
       // Image sprites (image plane + border plane behind for #c4a88240 border)
       spriteGroup = new THREE.Group();
       scene.add(spriteGroup);
-      const borderGeom = new THREE.PlaneGeometry(SPRITE_SIZE, SPRITE_SIZE);
-      const borderMat = new THREE.MeshBasicMaterial({
-        color: BORDER_COLOR,
-        transparent: true,
-        opacity: BORDER_ALPHA,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      });
+      const borderGeom = new THREE.PlaneGeometry(SPRITE_SIZE * 1.02, SPRITE_SIZE * 1.02);
+      const tileGeom = new THREE.PlaneGeometry(SPRITE_SIZE, SPRITE_SIZE);
       const tileJobs = [];
       pointsData.forEach((datum, i) => {
-        const geom = new THREE.PlaneGeometry(SPRITE_SIZE, SPRITE_SIZE);
         const mat = new THREE.MeshBasicMaterial({
           map: placeholderTexture(),
           side: THREE.DoubleSide,
           transparent: true,
-          opacity: 1,
-          depthTest: true,
-          depthWrite: true,
+          opacity: MIN_OPACITY,
+          depthWrite: false,  // translucent: let three.js sort back-to-front instead
         });
-        const plane = new THREE.Mesh(geom, mat);
-        plane.position.set(datum.x, datum.y, 0);
-        plane.userData = { index: i, datum };
-        const borderPlane = new THREE.Mesh(borderGeom.clone(), borderMat.clone());
-        borderPlane.position.set(datum.x, datum.y, -0.01);
-        borderPlane.scale.setScalar(1.02);
-        borderPlane.userData = { index: i, isBorder: true };
-        spriteGroup.add(borderPlane);
+        const plane = new THREE.Mesh(tileGeom, mat);
+        plane.position.set(datum.x, datum.y, datum.z);
+        const border = new THREE.Mesh(borderGeom, new THREE.MeshBasicMaterial({
+          color: BORDER_COLOR,
+          transparent: true,
+          opacity: BORDER_ALPHA * MIN_OPACITY,
+          side: THREE.DoubleSide,
+          depthWrite: false,
+        }));
+        border.position.z = -0.005;
+        border.userData = { isBorder: true };
+        plane.add(border);
+        plane.userData = { index: i, datum, border, focus: MIN_OPACITY };
         spriteGroup.add(plane);
+        tiles.push(plane);
         const url = getThumbUrl(datum);
         if (url) tileJobs.push({ url, plane, tries: 0, dist: Math.hypot(datum.x, datum.y) });
       });
@@ -604,10 +626,9 @@
         ctx.arc(px, py, 1.5, 0, Math.PI * 2);
         ctx.fill();
       });
-      const aspect = window.innerWidth / window.innerHeight;
-      const orthoSize = baseOrthoSize / zoomLevel;
-      const boxW = Math.max(8, Math.min(w - pad * 2, 2 * orthoSize * aspect * scale));
-      const boxH = Math.max(6, Math.min(h - pad * 2, 2 * orthoSize * scale));
+      const { halfW, halfH } = visibleHalfExtent();
+      const boxW = Math.max(8, Math.min(w - pad * 2, 2 * halfW * scale));
+      const boxH = Math.max(6, Math.min(h - pad * 2, 2 * halfH * scale));
       const vx = cx + (camera.position.x - centerX) * scale;
       const vy = cy - (camera.position.y - centerY) * scale;
       ctx.strokeStyle = 'rgba(196, 165, 116, 0.85)';
@@ -646,8 +667,7 @@
     function zoomToPoint(index) {
       const pt = pointsData[index];
       if (!pt) return;
-      camera.position.x = pt.x;
-      camera.position.y = pt.y;
+      camera.position.set(pt.x, pt.y, Math.max(CAM_Z_MIN, pt.z + FADE_NEAR * 0.6));
       if (searchResults) searchResults.classList.remove('visible');
       if (searchInput) searchInput.value = '';
     }
@@ -742,9 +762,19 @@
 
     panelClose.addEventListener('click', () => panel.classList.remove('open'));
 
-    function getOrthoSize() {
-      const aspect = window.innerWidth / window.innerHeight;
-      return (baseOrthoSize / zoomLevel) * Math.min(aspect, 1);
+    // Half width/height of the view at the front plane (z = 0)
+    function visibleHalfExtent() {
+      const halfH = Math.max(0.1, camera.position.z) * Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+      return { halfW: halfH * camera.aspect, halfH };
+    }
+
+    // World point on the front plane (z = 0) under a screen position
+    function screenToFrontPlane(clientX, clientY) {
+      const { halfW, halfH } = visibleHalfExtent();
+      return {
+        x: camera.position.x + ((clientX / window.innerWidth) * 2 - 1) * halfW,
+        y: camera.position.y - ((clientY / window.innerHeight) * 2 - 1) * halfH,
+      };
     }
 
     function onPointerDown(e) {
@@ -760,8 +790,7 @@
       if (isDragging) {
         const dx = e.clientX - dragStart.x;
         const dy = e.clientY - dragStart.y;
-        const orthoSize = getOrthoSize();
-        const worldPerPixel = (2 * orthoSize) / window.innerHeight;
+        const worldPerPixel = (2 * visibleHalfExtent().halfH) / window.innerHeight;
         camera.position.x = camStart.x - dx * worldPerPixel;
         camera.position.y = camStart.y + dy * worldPerPixel;
       }
@@ -773,25 +802,47 @@
       isDragging = false;
     }
 
+    // Fly along z toward whatever is under the cursor
     function onWheel(e) {
       e.preventDefault();
-      const delta = e.deltaY > 0 ? -0.1 : 0.1;
-      zoomLevel = Math.max(0.3, Math.min(15, zoomLevel + delta));
-      const aspect = window.innerWidth / window.innerHeight;
-      const orthoSize = baseOrthoSize / zoomLevel;
-      camera.left = -orthoSize * aspect;
-      camera.right = orthoSize * aspect;
-      camera.top = orthoSize;
-      camera.bottom = -orthoSize;
-      camera.updateProjectionMatrix();
+      const before = screenToFrontPlane(e.clientX, e.clientY);
+      const factor = Math.exp(Math.max(-0.5, Math.min(0.5, e.deltaY * 0.0015)));
+      camera.position.z = Math.max(CAM_Z_MIN, Math.min(CAM_Z_MAX, camera.position.z * factor));
+      const after = screenToFrontPlane(e.clientX, e.clientY);
+      camera.position.x += before.x - after.x;
+      camera.position.y += before.y - after.y;
+    }
+
+    // Ease each tile toward its focus opacity: closer to the camera and nearer screen centre = clearer
+    const _proj = new THREE.Vector3();
+    function smoothstep(a, b, x) {
+      const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+      return t * t * (3 - 2 * t);
+    }
+    function updateFocus() {
+      const hovered = hoveredSprite.current;
+      for (const tile of tiles) {
+        const dist = camera.position.z - tile.position.z;
+        let target = MIN_OPACITY;
+        if (dist > 0) {
+          _proj.copy(tile.position).project(camera);
+          const radius = Math.hypot(_proj.x, _proj.y);
+          const proximity = 1 - smoothstep(FADE_NEAR, FADE_FAR, dist);
+          const centred = 1 - smoothstep(FADE_CENTER, FADE_EDGE, radius);
+          target = MIN_OPACITY + (1 - MIN_OPACITY) * proximity * centred;
+        }
+        if (tile === hovered) target = 1;
+        const ud = tile.userData;
+        ud.focus += (target - ud.focus) * FADE_EASE;
+        tile.material.opacity = ud.focus;
+        ud.border.material.opacity = (tile === hovered ? 0.45 : BORDER_ALPHA) * ud.focus;
+      }
     }
 
     function updateHover() {
       raycaster.setFromCamera(mouse, camera);
       if (!spriteGroup) return;
-      const imagePlanes = spriteGroup.children.filter(c => !c.userData.isBorder);
-      const hits = raycaster.intersectObjects(imagePlanes);
-      const prev = hoveredSprite.current;
+      const hits = raycaster.intersectObjects(tiles, false).filter(h => h.object.userData.focus > 0.3);
       let next = null;
       if (hits.length > 0) {
         next = hits[0].object;
@@ -810,20 +861,11 @@
       } else {
         tooltip.classList.remove('visible');
       }
-      spriteGroup.children.forEach(obj => {
-        if (obj.userData.isBorder) return;
-        const isHover = obj === next;
-        const scale = isHover ? SPRITE_HOVER_SCALE : 1;
-        obj.scale.setScalar(scale);
-        const borderSibling = spriteGroup.children.find(
-          c => c.userData.isBorder && c.userData.index === obj.userData.index
-        );
-        if (borderSibling) {
-          borderSibling.scale.setScalar(isHover ? 1.02 * SPRITE_HOVER_SCALE : 1.02);
-          borderSibling.position.z = isHover ? -0.02 : -0.01;
-          borderSibling.material.opacity = isHover ? 0.45 : BORDER_ALPHA;
-        }
-      });
+      const prev = hoveredSprite.current;
+      if (prev !== next) {
+        if (prev) prev.scale.setScalar(1);
+        if (next) next.scale.setScalar(SPRITE_HOVER_SCALE);
+      }
       hoveredSprite.current = next;
     }
 
@@ -833,8 +875,7 @@
       mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
       raycaster.setFromCamera(mouse, camera);
       if (!spriteGroup) return;
-      const imagePlanes = spriteGroup.children.filter(c => !c.userData.isBorder);
-      const hits = raycaster.intersectObjects(imagePlanes);
+      const hits = raycaster.intersectObjects(tiles, false).filter(h => h.object.userData.focus > 0.3);
       if (hits.length > 0) {
         const idx = hits[0].object.userData.index;
         openImagePanel(idx);
@@ -844,18 +885,14 @@
     function animate() {
       requestAnimationFrame(animate);
       updateHover();
+      updateFocus();
       if (wayfinderCanvas && pointsData.length) drawWayfinder();
       renderer.render(scene, camera);
     }
 
     window.addEventListener('resize', () => {
       if (!camera || !renderer) return;
-      const aspect = window.innerWidth / window.innerHeight;
-      const orthoSize = baseOrthoSize / zoomLevel;
-      camera.left = -orthoSize * aspect;
-      camera.right = orthoSize * aspect;
-      camera.top = orthoSize;
-      camera.bottom = -orthoSize;
+      camera.aspect = window.innerWidth / window.innerHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(window.innerWidth, window.innerHeight);
     });
