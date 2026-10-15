@@ -273,7 +273,7 @@
     <div id="wayfinder-label">Click to jump · box = your view</div>
   </div>
   <div id="legend">
-    <strong>Constellation v2</strong> — Each dot is an image. Drag to pan, scroll to zoom. Hover to see caption; click image for details.
+    <strong>Constellation</strong> — Bigger themes sit closer; loosely related images trail behind. Drag to pan, scroll to fly through the layers. Click an image for details.
   </div>
 
   <script type="importmap">
@@ -316,17 +316,23 @@
     let camera, renderer;
     let tiles = [];  // image meshes; each has its border as a child
 
-    // Depth: big clusters sit at the front (z = 0), small themes recede, unclustered at the back.
-    const MAX_DEPTH = 14;
-    const DEPTH_JITTER = 0.6;
-    // Camera: perspective, zoom = flying along z.
+    // Depth: the biggest themes sit at the front (z = 0) and smaller themes recede. Within a theme,
+    // its strongest images are in front and loosely-related ones trail behind it.
+    const THEME_DEPTH = 10;    // front theme → smallest theme
+    const MEMBER_DEPTH = 4;    // a theme's core → its loosely-related images
+    const MAX_DEPTH = THEME_DEPTH + MEMBER_DEPTH;
+    const DEPTH_JITTER = 0.5;
+    // Tiles are drawn larger in front and smaller further back (on top of perspective).
+    const SIZE_FRONT = 1.4, SIZE_BACK = 0.65;
+    // Camera: perspective; scrolling flies along z, through the layers.
     const FOV = 50;
-    const CAM_Z_MIN = 2.5, CAM_Z_MAX = 48, CAM_Z_START = 26;
-    // Focus fade: tiles go from MIN_OPACITY to 1 as they get closer to the camera and to screen centre.
+    const CAM_Z_MIN = -MAX_DEPTH + 1, CAM_Z_MAX = 48, CAM_Z_START = 26;
+    // Opacity by depth: the nearest layer on screen is fully opaque, deeper layers fade to MIN_OPACITY.
     const MIN_OPACITY = 0.15;
-    const FADE_NEAR = 14, FADE_FAR = 46;          // camera distance: full → faint
-    const FADE_CENTER = 0.3, FADE_EDGE = 1.15;    // screen radius (0 = centre, 1 ≈ edge): full → faint
-    const FADE_EASE = 0.12;                       // per-frame easing toward the target opacity
+    const FOCUS_BAND = 2;      // this far behind the nearest layer is still fully opaque
+    const FADE_SPAN = 8;       // then fades to MIN_OPACITY over this distance
+    const PASS_FADE = 1.5;     // tiles closer than this fade out as you fly past them
+    const FADE_EASE = 0.12;    // per-frame easing toward the target opacity
     let isDragging = false;
     let dragStart = { x: 0, y: 0 };
     let camStart = { x: 0, y: 0 };
@@ -505,17 +511,21 @@
     }
 
     function assignDepth(points) {
-      const sizes = {};
-      points.forEach(p => { if (p.cluster !== -1 && p.cluster !== '-1') sizes[p.cluster] = (sizes[p.cluster] || 0) + 1; });
-      const maxLog = Math.log(Math.max(2, ...Object.values(sizes)));
-      points.forEach(p => {
-        const size = sizes[p.cluster] || 1;  // unclustered counts as a theme of one: furthest back
-        const back = 1 - Math.log(size) / maxLog;  // 0 for the biggest cluster, 1 for singletons
-        // Deterministic jitter (stable between visits) so a cluster reads as a volume, not a sheet
+      // Older data files lack cluster_size/membership: count sizes here and treat everyone as core
+      const counts = {};
+      points.forEach(p => { counts[p.cluster] = (counts[p.cluster] || 0) + 1; });
+      const sizeOf = p => p.cluster_size || ((p.cluster === -1 || p.cluster === '-1') ? 1 : counts[p.cluster]);
+      const logs = points.map(p => Math.log(sizeOf(p)));
+      const maxLog = Math.max(...logs), minLog = Math.min(...logs);
+      points.forEach((p, i) => {
+        const themeBack = maxLog > minLog ? (maxLog - logs[i]) / (maxLog - minLog) : 0;  // 0 = biggest theme
+        const looseness = 1 - (p.membership ?? 1);                                        // 0 = core member
+        // Deterministic jitter (stable between visits) so a theme reads as a volume, not a sheet
         const h = Math.sin((p.x * 12.9898 + p.y * 78.233) * 43758.5453);
         const jitter = (h - Math.floor(h) - 0.5) * DEPTH_JITTER;
-        p.z = -back * MAX_DEPTH + jitter;
-        p.clusterSize = size;
+        p.z = -(themeBack * THEME_DEPTH + looseness * MEMBER_DEPTH) + jitter;
+        const depthFrac = Math.min(1, Math.max(0, -p.z / MAX_DEPTH));
+        p.size = SIZE_FRONT + (SIZE_BACK - SIZE_FRONT) * depthFrac;
       });
     }
 
@@ -570,6 +580,7 @@
         });
         const plane = new THREE.Mesh(tileGeom, mat);
         plane.position.set(datum.x, datum.y, datum.z);
+        plane.scale.setScalar(datum.size);
         const border = new THREE.Mesh(borderGeom, new THREE.MeshBasicMaterial({
           color: BORDER_COLOR,
           transparent: true,
@@ -580,7 +591,7 @@
         border.position.z = -0.005;
         border.userData = { isBorder: true };
         plane.add(border);
-        plane.userData = { index: i, datum, border, focus: MIN_OPACITY };
+        plane.userData = { index: i, datum, border, focus: MIN_OPACITY, baseScale: datum.size };
         spriteGroup.add(plane);
         tiles.push(plane);
         const url = getThumbUrl(datum);
@@ -667,7 +678,7 @@
     function zoomToPoint(index) {
       const pt = pointsData[index];
       if (!pt) return;
-      camera.position.set(pt.x, pt.y, Math.max(CAM_Z_MIN, pt.z + FADE_NEAR * 0.6));
+      camera.position.set(pt.x, pt.y, Math.max(CAM_Z_MIN, pt.z + 6));
       if (searchResults) searchResults.classList.remove('visible');
       if (searchInput) searchInput.value = '';
     }
@@ -762,15 +773,18 @@
 
     panelClose.addEventListener('click', () => panel.classList.remove('open'));
 
-    // Half width/height of the view at the front plane (z = 0)
-    function visibleHalfExtent() {
-      const halfH = Math.max(0.1, camera.position.z) * Math.tan(THREE.MathUtils.degToRad(FOV / 2));
+    // Distance from the camera to the nearest layer on screen (eased; updated each frame)
+    let focusDist = CAM_Z_START;
+
+    // Half width/height of the view at the nearest layer (or at distance d)
+    function visibleHalfExtent(d = focusDist) {
+      const halfH = Math.max(0.5, d) * Math.tan(THREE.MathUtils.degToRad(FOV / 2));
       return { halfW: halfH * camera.aspect, halfH };
     }
 
-    // World point on the front plane (z = 0) under a screen position
-    function screenToFrontPlane(clientX, clientY) {
-      const { halfW, halfH } = visibleHalfExtent();
+    // World x/y on the nearest layer under a screen position
+    function screenToFocusPlane(clientX, clientY, d = focusDist) {
+      const { halfW, halfH } = visibleHalfExtent(d);
       return {
         x: camera.position.x + ((clientX / window.innerWidth) * 2 - 1) * halfW,
         y: camera.position.y - ((clientY / window.innerHeight) * 2 - 1) * halfH,
@@ -802,39 +816,49 @@
       isDragging = false;
     }
 
-    // Fly along z toward whatever is under the cursor
+    // Fly along z toward whatever is under the cursor; step size scales with distance to the nearest layer
     function onWheel(e) {
       e.preventDefault();
-      const before = screenToFrontPlane(e.clientX, e.clientY);
-      const factor = Math.exp(Math.max(-0.5, Math.min(0.5, e.deltaY * 0.0015)));
-      camera.position.z = Math.max(CAM_Z_MIN, Math.min(CAM_Z_MAX, camera.position.z * factor));
-      const after = screenToFrontPlane(e.clientX, e.clientY);
+      const before = screenToFocusPlane(e.clientX, e.clientY);
+      const step = Math.max(-0.4, Math.min(0.4, e.deltaY * 0.0015)) * Math.max(2.5, focusDist);
+      const z = Math.max(CAM_Z_MIN, Math.min(CAM_Z_MAX, camera.position.z + step));
+      const moved = z - camera.position.z;
+      camera.position.z = z;
+      const after = screenToFocusPlane(e.clientX, e.clientY, focusDist + moved);
       camera.position.x += before.x - after.x;
       camera.position.y += before.y - after.y;
+      focusDist = Math.max(0.5, focusDist + moved);
     }
 
-    // Ease each tile toward its focus opacity: closer to the camera and nearer screen centre = clearer
+    // Opacity by depth: the nearest layer on screen is fully opaque, deeper layers fade back,
+    // and tiles you're flying past fade out instead of filling the screen.
     const _proj = new THREE.Vector3();
     function smoothstep(a, b, x) {
       const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
       return t * t * (3 - 2 * t);
     }
     function updateFocus() {
+      // Nearest layer = closest tile ahead of the camera that's on screen
+      let nearest = Infinity;
+      for (const tile of tiles) {
+        const dist = camera.position.z - tile.position.z;
+        if (dist <= PASS_FADE || dist >= nearest) continue;
+        _proj.copy(tile.position).project(camera);
+        if (Math.abs(_proj.x) <= 1 && Math.abs(_proj.y) <= 1) nearest = dist;
+      }
+      if (nearest !== Infinity) focusDist += (nearest - focusDist) * 0.15;
+
       const hovered = hoveredSprite.current;
       for (const tile of tiles) {
         const dist = camera.position.z - tile.position.z;
-        let target = MIN_OPACITY;
-        if (dist > 0) {
-          _proj.copy(tile.position).project(camera);
-          const radius = Math.hypot(_proj.x, _proj.y);
-          const proximity = 1 - smoothstep(FADE_NEAR, FADE_FAR, dist);
-          const centred = 1 - smoothstep(FADE_CENTER, FADE_EDGE, radius);
-          target = MIN_OPACITY + (1 - MIN_OPACITY) * proximity * centred;
-        }
+        const passing = smoothstep(PASS_FADE * 0.3, PASS_FADE, dist);  // 0 once behind/at the camera
+        const depthFade = 1 - smoothstep(focusDist + FOCUS_BAND, focusDist + FOCUS_BAND + FADE_SPAN, dist);
+        let target = passing * (MIN_OPACITY + (1 - MIN_OPACITY) * depthFade);
         if (tile === hovered) target = 1;
         const ud = tile.userData;
         ud.focus += (target - ud.focus) * FADE_EASE;
         tile.material.opacity = ud.focus;
+        tile.visible = ud.focus > 0.01;
         ud.border.material.opacity = (tile === hovered ? 0.45 : BORDER_ALPHA) * ud.focus;
       }
     }
@@ -863,8 +887,8 @@
       }
       const prev = hoveredSprite.current;
       if (prev !== next) {
-        if (prev) prev.scale.setScalar(1);
-        if (next) next.scale.setScalar(SPRITE_HOVER_SCALE);
+        if (prev) prev.scale.setScalar(prev.userData.baseScale);
+        if (next) next.scale.setScalar(next.userData.baseScale * SPRITE_HOVER_SCALE);
       }
       hoveredSprite.current = next;
     }

@@ -157,14 +157,25 @@ def main():
     coords_2d = coords_2d / scale
     coords_2d = coords_2d * 3.0
 
-    print("Clustering (HDBSCAN)...")
+    # Themes: cluster in a 10D UMAP space (keeps far more structure than the 2D layout).
+    # "leaf" selection finds the finest stable themes; the default merges this archive into ~2 blobs.
+    print("Finding themes (UMAP 10D + HDBSCAN leaf)...")
     import hdbscan
-    clusterer = hdbscan.HDBSCAN(min_cluster_size=2, min_samples=1)
-    labels = clusterer.fit_predict(coords_2d)
+    themes_space = umap.UMAP(n_neighbors=30, min_dist=0.0, n_components=10, metric="cosine", random_state=42).fit_transform(X)
+    clusterer = hdbscan.HDBSCAN(min_cluster_size=8, min_samples=3, cluster_selection_method="leaf")
+    labels = clusterer.fit_predict(themes_space)
+    membership = clusterer.probabilities_.astype(float)  # 0..1: how strongly each image belongs to its theme
     unique_labels = sorted(set(labels) - {-1})
-    n_clusters = len(unique_labels)
-    n_noise = int(np.sum(labels == -1))
-    print(f"  Found {n_clusters} clusters, {n_noise} unclustered (noise) points.")
+    loose = labels == -1
+    # Attach loosely-related images to their nearest theme (membership 0 → placed behind the theme's core)
+    if unique_labels and loose.any():
+        centroids = np.stack([themes_space[labels == cid].mean(axis=0) for cid in unique_labels])
+        nearest = np.linalg.norm(themes_space[loose][:, None, :] - centroids[None, :, :], axis=2).argmin(axis=1)
+        labels = labels.copy()
+        labels[loose] = np.array(unique_labels)[nearest]
+        membership[loose] = 0.0
+    sizes = {cid: int(np.sum(labels == cid)) for cid in unique_labels}
+    print(f"  Found {len(unique_labels)} themes; {int(loose.sum())} loosely-related images attached to their nearest theme.")
 
     # Global centroid
     global_centroid = np.mean(coords_2d, axis=0)
@@ -215,6 +226,8 @@ def main():
             "x": float(coords_2d[i, 0]),
             "y": float(coords_2d[i, 1]),
             "cluster": int(labels[i]),
+            "cluster_size": sizes.get(int(labels[i]), 1),
+            "membership": round(float(membership[i]), 3),
             "username": (r.get("source_collection") or "").strip() or None,
             "description": (r.get("original_description") or "").strip() or None,
             "image_url": (r.get("image_url") or "").strip() or None,
